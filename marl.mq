@@ -67,6 +67,7 @@ def _marl_scan(template, source_name):
   | var column = 1
   | var reversed = None
   | var count = 0
+  | var trim_next = false
   | while (cur < n):
       let start = cur
       | let at = {source_name: source_name, line: line, column: column}
@@ -74,8 +75,23 @@ def _marl_scan(template, source_name):
           let opener = chars[cur + 1]
           | let close_pos = _marl_close(chars, cur + 2, n, opener)
           | if (is_none(close_pos)): _marl_error("Unclosed template tag", at)
-          | let source = trim(_marl_slice(chars, cur + 2, close_pos))
+          # `{{-`, `{%-`, `{#-` strip whitespace before the tag; `-}}`, `-%}`,
+          # `-#}` strip whitespace after it.
+          | let trim_before = close_pos > cur + 2 && chars[cur + 2] == "-"
+          | let trim_after = close_pos > cur + 2 && chars[close_pos - 1] == "-"
+          | let inner_from = if (trim_before): cur + 3 else: cur + 2
+          | let inner_to = if (trim_after && close_pos - 1 >= inner_from): close_pos - 1 else: close_pos
+          | let source = trim(_marl_slice(chars, inner_from, inner_to))
           | cur = close_pos + 2
+          | if (trim_before && !is_none(reversed) && reversed[0][:kind] == "text") do
+              let kept = rtrim(reversed[0][:text])
+              | reversed = if (is_empty(kept)) do
+                    count -= 1
+                    | reversed[1]
+                  end
+                  else: [{kind: "text", text: kept}, reversed[1]]
+            end
+          | trim_next = trim_after
           | if (opener == "%" && source == "raw") do
               let raw_start = cur
               | var raw_end = None
@@ -93,6 +109,7 @@ def _marl_scan(template, source_name):
               | if (is_none(raw_end)): _marl_error("Unclosed raw block", at)
               | reversed = [{kind: "text", text: _marl_slice(chars, raw_start, raw_end)}, reversed]
               | count += 1
+              | trim_next = false
               | cur = closing_end
             end
             elif (opener != "#") do
@@ -106,8 +123,12 @@ def _marl_scan(template, source_name):
         | while (end_pos < n && !_marl_marker(chars, end_pos, n)):
             end_pos += 1
           end
-        | reversed = [{kind: "text", text: _marl_slice(chars, cur, end_pos)}, reversed]
-        | count += 1
+        | let text = if (trim_next): ltrim(_marl_slice(chars, cur, end_pos)) else: _marl_slice(chars, cur, end_pos)
+        | trim_next = false
+        | if (!is_empty(text)) do
+            reversed = [{kind: "text", text: text}, reversed]
+            | count += 1
+          end
         | cur = end_pos
       end
       | let next = _marl_advance(chars, start, cur, line, column)
@@ -270,13 +291,34 @@ def _marl_set(source, at):
   | {kind: "set", name: name, ast: _marl_expr(trim(_marl_slice(chars, 1, len(chars))), at), at: at}
 end
 
+# Template helpers written in mq. They are compiled once per template and
+# bound as functions, so they work both directly and as pipeline filters.
+# The piped value is the last argument: `x | default(d)`, `text | link(url)`,
+# `dict | frontmatter`. `default` replaces None and empty strings; `link` builds
+# a Markdown link; `frontmatter` renders a dict as a YAML front matter block,
+# skipping None values.
+def _marl_helper_sources():
+  [
+    "def default(d, v = .): if (is_none(v) || v == \"\"): d else: v end end",
+    "def link(url, text = .): \"[\" + to_string(text) + \"](\" + to_string(url) + \")\" end",
+    "def frontmatter(m = .): \"---\\n\" + join(map(filter(entries(m), fn(e): !is_none(e[1]) end), fn(e): e[1] | yaml_property(e[0]) end), \"\\n\") + \"\\n---\\n\" end"
+  ]
+end
+
+def _marl_helpers():
+  dict(map(_marl_helper_sources(), fn(source):
+    let ast = mqmq::mqmq_compile(source)
+    | [ast[:name], {kind: "fn", name: ast[:name], params: ast[:params], body: ast[:body], env: {}}]
+  end))
+end
+
 def marl_compile(template, source_name = "<template>"):
   let tokens = _marl_scan(template, source_name)
   | let parsed = _marl_block(tokens, 0)
   | if (parsed[:pos] != len(tokens)):
       _marl_error("Unexpected closing tag '" + _marl_word(tokens[parsed[:pos]][:source])[:word] + "'",
         tokens[parsed[:pos]][:at])
-    else: {kind: "template", items: parsed[:items]}
+    else: {kind: "template", items: parsed[:items], helpers: _marl_helpers()}
 end
 
 def _marl_output(value):
@@ -334,7 +376,7 @@ end
 # override data keys. A loop changes '.' to its current item.
 def marl_render_ast(ast, data, env = {}):
   let data_env = if (is_dict(data)): entries(data) else: []
-  | let initial = dict(data_env + entries(env) + [["__nodes__", data]])
+  | let initial = dict(entries(ast[:helpers]) + data_env + entries(env) + [["__nodes__", data]])
   | _marl_render_nodes(ast[:items], data, initial)[:text]
 end
 

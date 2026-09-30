@@ -114,3 +114,22 @@ def test_render_errors_keep_compiled_tag_location():
   | assert_eq(failure, "view.md:3:1: Unknown function: missing")
   | assert_eq(bad_iter, "page.md:2:1: For expects an array")
 end
+
+def test_whitespace_control_trims_around_tags():
+  let template = "a\n{%- if ok -%}\n  X\n{%- endif -%}\n b {{- name -}} !{#- note -#} \n c"
+  | assert_eq(marl_render(template, {ok: true, name: "N"}), "aXbN!c")
+  | assert_eq(marl_render("{{ 5 - 3 }} {{ -1 + 3 }}", {}), "2 2")
+end
+
+def test_whitespace_control_keeps_line_tracking():
+  let failure = try: marl_render("a\n  {{- x -}}  \n{{ missing() }}", {x: 1}, {}, "page.md")
+                catch(e): e[:message]
+  | assert_eq(failure, "page.md:3:1: Unknown function: missing")
+end
+
+def test_helpers_default_link_frontmatter():
+  assert_eq(marl_render("{{ n | default(\"none\") }}|{{ s | default(\"none\") }}", {n: None, s: "x"}), "none|x")
+  | assert_eq(marl_render("{{ \"go\" | link(\"http://x\") }} {{ link(\"u\", \"b\") }}", {}), "[go](http://x) [b](u)")
+  | assert_eq(marl_render("{{ meta | frontmatter() }}{{ title | h1 }}", {title: "T", meta: {title: "T", tags: ["a"], skip: None}}),
+      "---\ntitle: T\ntags:\n  - a\n---\n# T")
+end
