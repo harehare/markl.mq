@@ -1,0 +1,116 @@
+include "marl"
+| include "test"
+
+def test_text_expressions_and_filters():
+  assert_eq(marl_render("# {{ title | upper }}\n{{ author[:name] }}", {title: "note", author: {name: "Ada"}}),
+    "# NOTE\nAda")
+end
+
+def test_none_and_extra_environment():
+  assert_eq(marl_render("{{ value }}-{{ extra }}", {value: None}, {extra: 3}), "-3")
+end
+
+def test_quoted_delimiter_and_comment():
+  assert_eq(marl_render("A{{ \"}}\" }}{# {{ missing }} #}B", {}), "A}}B")
+end
+
+def test_raw_block_preserves_template_syntax():
+  let template = "A{% raw %}\n{{ title }} {% if ok %}{# note #}\n{% endraw %}B{{ title }}"
+  | assert_eq(marl_render(template, {title: "done"}),
+      "A\n{{ title }} {% if ok %}{# note #}\nBdone")
+end
+
+def test_raw_block_reports_opening_tag_and_tracks_following_lines():
+  let unclosed = try: marl_compile("é\r\n{% raw %}\r\n{{ ignored }}", "page.md")
+                 catch(e): e[:message]
+  | let after = try: marl_render("{% raw %}\r\n{{ ignored }}\r\n{% endraw %}\r\n{{ missing() }}",
+                  {}, {}, "page.md")
+                catch(e): e[:message]
+  | assert_eq(unclosed, "page.md:2:1: Unclosed raw block")
+  | assert_eq(after, "page.md:4:1: Unknown function: missing")
+end
+
+def test_if_elif_else_and_nesting():
+  let template = "{% if n == 1 %}one{% elif n == 2 %}{% if ok %}two{% else %}no{% endif %}{% else %}other{% endif %}"
+  | assert_eq(marl_render(template, {n: 1}), "one")
+  | assert_eq(marl_render(template, {n: 2, ok: true}), "two")
+  | assert_eq(marl_render(template, {n: 2, ok: false}), "no")
+  | assert_eq(marl_render(template, {n: 3}), "other")
+end
+
+def test_for_iteration_scope_and_current_value():
+  let template = "{% for item in items %}{{ iteration[:index] }}:{{ . }};{% endfor %}{{ item }}"
+  | assert_eq(marl_render(template, {items: ["a", "b"], item: "outer"}), "1:a;2:b;outer")
+  | assert_eq(marl_render(template, {items: [], item: "outer"}), "outer")
+end
+
+def test_for_else_renders_only_for_empty_arrays():
+  let template = "{% for item in items %}[{{ item }}]{% else %}empty {{ title }}{% endfor %}"
+  | assert_eq(marl_render(template, {items: [], title: "Notes"}), "empty Notes")
+  | assert_eq(marl_render(template, {items: [1, 2], title: "Notes"}), "[1][2]")
+end
+
+def test_nested_for_else_and_binding_scope():
+  let nested = "{% for group in groups %}{% for item in group %}{{ item }}{% else %}-{% endfor %};{% endfor %}"
+  | let scope = "{% set label = \"before\" %}{% for item in items %}{% set label = item %}{{ label }}{% else %}{% set label = \"empty\" %}{% endfor %}{{ label }}"
+  | assert_eq(marl_render(nested, {groups: [[], [1, 2]]}), "-;12;")
+  | assert_eq(marl_render(scope, {items: ["A"]}), "Abefore")
+  | assert_eq(marl_render(scope, {items: []}), "empty")
+end
+
+def test_for_else_rejects_malformed_closing_tags():
+  let extra = try: marl_compile("{% for item in items %}x{% else extra %}empty{% endfor %}", "list.md")
+              catch(e): e[:message]
+  | let wrong = try: marl_compile("{% for item in items %}x{% else %}empty{% endif %}", "list.md")
+              catch(e): e[:message]
+  | assert_eq(starts_with(extra, "list.md:1:25: Unexpected text after 'else'"), true)
+  | assert_eq(starts_with(wrong, "list.md:1:40: Expected endfor"), true)
+end
+
+def test_set_and_branch_scope():
+  let template = "{% set x = 1 %}{% if enabled %}{% set x = x + 2 %}{% endif %}{{ x }}"
+  | assert_eq(marl_render(template, {enabled: true}), "3")
+  | assert_eq(marl_render(template, {enabled: false}), "1")
+end
+
+def test_compiled_template_reuse():
+  let ast = marl_compile("{{ title | upper }}")
+  | assert_eq(marl_render_ast(ast, {title: "one"}), "ONE")
+  | assert_eq(marl_render_ast(ast, {title: "two"}), "TWO")
+end
+
+def test_compiled_for_else_and_raw_reuse():
+  let ast = marl_compile("{% for item in items %}{{ item }}{% else %}{% raw %}{{ item }}{% endraw %}{% endfor %}")
+  | assert_eq(marl_render_ast(ast, {items: []}), "{{ item }}")
+  | assert_eq(marl_render_ast(ast, {items: [1, 2]}), "12")
+end
+
+def test_invalid_blocks_and_iterables():
+  let unclosed = try: marl_compile("{% if true %}x") == "unexpected" catch: true
+  | let mismatch = try: marl_compile("{% for x in xs %}x{% endif %}") == "unexpected" catch: true
+  | let extra = try: marl_compile("{% if true %}x{% endif ignored %}") == "unexpected" catch: true
+  | let bad_iter = try: marl_render("{% for x in 3 %}x{% endfor %}", {}) == "unexpected" catch: true
+  | assert_eq([unclosed, mismatch, extra, bad_iter], [true, true, true, true])
+end
+
+def test_compile_errors_report_template_location():
+  let unknown = try: marl_compile("é\r\n x {% nope %}", "unicode.md")
+                catch(e): e[:message]
+  | let unclosed = try: marl_compile("x\n{% if true %}x", "page.md")
+                   catch(e): e[:message]
+  | let invalid_expr = try: marl_compile("a\n{{ 1 + }}", "page.md")
+                       catch(e): e[:message]
+  | assert_eq(unknown, "unicode.md:2:4: Unknown template tag 'nope'")
+  | assert_eq(unclosed, "page.md:2:1: Unclosed template block")
+  | assert_eq(starts_with(invalid_expr, "page.md:2:1: "), true)
+end
+
+def test_render_errors_keep_compiled_tag_location():
+  let ast = marl_compile("one\n{% for item in items %}\n{{ missing() }}\n{% endfor %}", "view.md")
+  | let failure = try: marl_render_ast(ast, {items: [1]})
+                  catch(e): e[:message]
+  | let bad_iter = try: marl_render("x\n{% for item in n %}x{% endfor %}", {n: 3}, {}, "page.md")
+                   catch(e): e[:message]
+  | assert_eq(failure, "view.md:3:1: Unknown function: missing")
+  | assert_eq(bad_iter, "page.md:2:1: For expects an array")
+end

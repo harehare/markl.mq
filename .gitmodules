@@ -1,0 +1,3 @@
+[submodule "vendor/mqmq"]
+	path = vendor/mqmq
+	url = https://github.com/harehare/mqmq.git

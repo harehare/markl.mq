@@ -1,0 +1,347 @@
+# A small Markdown template engine with mqmq expressions.
+
+import "mqmq"
+|
+
+def _marl_slice(chars, from, to):
+  join(chars[from:to], "")
+end
+
+def _marl_error(message, at):
+  error(at[:source_name] + ":" + to_string(at[:line]) + ":" +
+    to_string(at[:column]) + ": " + message)
+end
+
+# Grapheme columns match the scanner's character positions. CRLF is one line
+# break, including when the host grapheme splitter returns it as one item.
+def _marl_advance(chars, from, to, line, column):
+  var current_line = line
+  | var current_column = column
+  | var i = from
+  | while (i < to):
+      let ch = chars[i]
+      | if (ch == "\r\n" || ch == "\r" || ch == "\n") do
+          if (ch == "\r" && i + 1 < to && chars[i + 1] == "\n"): i += 1
+          | current_line += 1
+          | current_column = 1
+        end
+        else: current_column += 1
+      | i += 1
+    end
+  | {line: current_line, column: current_column}
+end
+
+def _marl_marker(chars, pos, n):
+  pos + 1 < n && chars[pos] == "{" &&
+    (chars[pos + 1] == "{" || chars[pos + 1] == "%" || chars[pos + 1] == "#")
+end
+
+# Quotes protect closing delimiters inside expressions and statements.
+def _marl_close(chars, pos, n, opener):
+  let close_first = if (opener == "{"): "}" else: opener
+  | var quote = None
+  | var escaped = false
+  | var found = None
+  | var i = pos
+  | while (i + 1 < n && is_none(found)):
+      let ch = chars[i]
+      | if (!is_none(quote)) do
+          if (escaped): escaped = false
+          elif (ch == "\\"): escaped = true
+          elif (ch == quote): quote = None
+        end
+        elif (opener != "#" && (ch == "\"" || ch == "'")):
+          quote = ch
+        elif (ch == close_first && chars[i + 1] == "}"):
+          found = i
+      | i += 1
+    end
+  | found
+end
+
+def _marl_scan(template, source_name):
+  let chars = graphemes(template)
+  | let n = len(chars)
+  | var cur = 0
+  | var line = 1
+  | var column = 1
+  | var reversed = None
+  | var count = 0
+  | while (cur < n):
+      let start = cur
+      | let at = {source_name: source_name, line: line, column: column}
+      | if (_marl_marker(chars, cur, n)) do
+          let opener = chars[cur + 1]
+          | let close_pos = _marl_close(chars, cur + 2, n, opener)
+          | if (is_none(close_pos)): _marl_error("Unclosed template tag", at)
+          | let source = trim(_marl_slice(chars, cur + 2, close_pos))
+          | cur = close_pos + 2
+          | if (opener == "%" && source == "raw") do
+              let raw_start = cur
+              | var raw_end = None
+              | var closing_end = None
+              | while (cur < n && is_none(raw_end)):
+                  if (cur + 1 < n && chars[cur] == "{" && chars[cur + 1] == "%") do
+                    let candidate = _marl_close(chars, cur + 2, n, "%")
+                    | if (!is_none(candidate) && trim(_marl_slice(chars, cur + 2, candidate)) == "endraw") do
+                        raw_end = cur
+                        | closing_end = candidate + 2
+                      end
+                  end
+                  | if (is_none(raw_end)): cur += 1
+                end
+              | if (is_none(raw_end)): _marl_error("Unclosed raw block", at)
+              | reversed = [{kind: "text", text: _marl_slice(chars, raw_start, raw_end)}, reversed]
+              | count += 1
+              | cur = closing_end
+            end
+            elif (opener != "#") do
+              let kind = if (opener == "{"): "expr" else: "stmt"
+              | reversed = [{kind: kind, source: source, at: at}, reversed]
+              | count += 1
+            end
+        end
+      else do
+        var end_pos = cur + 1
+        | while (end_pos < n && !_marl_marker(chars, end_pos, n)):
+            end_pos += 1
+          end
+        | reversed = [{kind: "text", text: _marl_slice(chars, cur, end_pos)}, reversed]
+        | count += 1
+        | cur = end_pos
+      end
+      | let next = _marl_advance(chars, start, cur, line, column)
+      | line = next[:line]
+      | column = next[:column]
+    end
+  | _marl_stages(reversed, count)
+end
+
+def _marl_space(ch):
+  ch == " " || ch == "\t" || ch == "\n" || ch == "\r"
+end
+
+def _marl_word(source):
+  let chars = graphemes(trim(source))
+  | let n = len(chars)
+  | var i = 0
+  | while (i < n && !_marl_space(chars[i])):
+      i += 1
+    end
+  | {word: _marl_slice(chars, 0, i), rest: trim(_marl_slice(chars, i, n))}
+end
+
+def _marl_name(name, at):
+  let ast = try: mqmq::mqmq_compile(name)
+               catch(e): _marl_error(e[:message], at)
+  | if (ast[:kind] != "ident"):
+      _marl_error("Expected a variable name, got '" + name + "'", at)
+    else: name
+end
+
+def _marl_expr(source, at):
+  if (is_empty(source)): _marl_error("Expected an expression", at)
+  else:
+    try: mqmq::mqmq_compile(source)
+    catch(e): _marl_error(e[:message], at)
+end
+
+def _marl_stages(reversed, count):
+  if (count == 0): []
+  else:
+    reverse(foreach (i, range(0, count - 1)):
+      let stage = reversed[0]
+      | reversed = reversed[1]
+      | stage
+    end)
+end
+
+# Leave the closing block tag unconsumed for the caller.
+def _marl_block(tokens, pos):
+  var cur = pos
+  | var reversed = None
+  | var count = 0
+  | let n = len(tokens)
+  | while (cur < n):
+      let tok = tokens[cur]
+      | let kind = tok[:kind]
+      | var node = None
+      | if (kind == "text") do
+          node = tok
+          | cur += 1
+        end
+        elif (kind == "expr") do
+          node = {kind: "expr", ast: _marl_expr(tok[:source], tok[:at]), at: tok[:at]}
+          | cur += 1
+        end
+        else do
+          let command = _marl_word(tok[:source])
+          | let word = command[:word]
+          | let rest = command[:rest]
+          | if (word == "endif" || word == "endfor" || word == "else" || word == "elif"):
+              break
+            elif (word == "if") do
+              let parsed = _marl_if(tokens, cur, rest)
+              | node = parsed[:node]
+              | cur = parsed[:pos]
+            end
+            elif (word == "for") do
+              let parsed = _marl_for(tokens, cur, rest)
+              | node = parsed[:node]
+              | cur = parsed[:pos]
+            end
+            elif (word == "set") do
+              node = _marl_set(rest, tok[:at])
+              | cur += 1
+            end
+            else: _marl_error("Unknown template tag '" + word + "'", tok[:at])
+        end
+      | reversed = [node, reversed]
+      | count += 1
+    end
+  | {items: _marl_stages(reversed, count), pos: cur}
+end
+
+def _marl_end_word(tokens, pos, opening):
+  if (pos >= len(tokens)): _marl_error("Unclosed template block", opening)
+  else do
+    let command = _marl_word(tokens[pos][:source])
+    | let word = command[:word]
+    | if ((word == "endif" || word == "endfor" || word == "else") && !is_empty(command[:rest])):
+        _marl_error("Unexpected text after '" + word + "'", tokens[pos][:at])
+      else: command
+  end
+end
+
+def _marl_if(tokens, pos, source):
+  let at = tokens[pos][:at]
+  | let cond = _marl_expr(source, at)
+  | let then_part = _marl_block(tokens, pos + 1)
+  | let closing = _marl_end_word(tokens, then_part[:pos], at)
+  | let word = closing[:word]
+  | if (word == "endif"):
+      {node: {kind: "if", cond: cond, then_part: then_part[:items], else_part: [], at: at},
+       pos: then_part[:pos] + 1}
+    elif (word == "else") do
+      let else_part = _marl_block(tokens, then_part[:pos] + 1)
+      | let end_tag = _marl_end_word(tokens, else_part[:pos], at)
+      | if (end_tag[:word] != "endif"):
+          _marl_error("Expected endif", tokens[else_part[:pos]][:at])
+      | {node: {kind: "if", cond: cond, then_part: then_part[:items], else_part: else_part[:items], at: at},
+         pos: else_part[:pos] + 1}
+    end
+    elif (word == "elif") do
+      let nested = _marl_if(tokens, then_part[:pos], closing[:rest])
+      | {node: {kind: "if", cond: cond, then_part: then_part[:items], else_part: [nested[:node]], at: at},
+         pos: nested[:pos]}
+    end
+    else: _marl_error("Expected else, elif, or endif", tokens[then_part[:pos]][:at])
+end
+
+def _marl_for(tokens, pos, source):
+  let at = tokens[pos][:at]
+  | let variable = _marl_word(source)
+  | let separator = _marl_word(variable[:rest])
+  | if (separator[:word] != "in"): _marl_error("Expected 'for name in expression'", at)
+  | let name = _marl_name(variable[:word], at)
+  | let iter = _marl_expr(separator[:rest], at)
+  | let body = _marl_block(tokens, pos + 1)
+  | let closing = _marl_end_word(tokens, body[:pos], at)
+  | let alternate = if (closing[:word] == "endfor"):
+      {items: [], pos: body[:pos]}
+    elif (closing[:word] == "else") do
+      let else_part = _marl_block(tokens, body[:pos] + 1)
+      | let end_tag = _marl_end_word(tokens, else_part[:pos], at)
+      | if (end_tag[:word] != "endfor"):
+          _marl_error("Expected endfor", tokens[else_part[:pos]][:at])
+      | {items: else_part[:items], pos: else_part[:pos]}
+    end
+    else: _marl_error("Expected endfor or else", tokens[body[:pos]][:at])
+  | {node: {kind: "for", name: name, iter: iter, body: body[:items],
+      else_part: alternate[:items], at: at}, pos: alternate[:pos] + 1}
+end
+
+def _marl_set(source, at):
+  let variable = _marl_word(source)
+  | let name = _marl_name(variable[:word], at)
+  | let rest = variable[:rest]
+  | if (!starts_with(rest, "=")): _marl_error("Expected 'set name = expression'", at)
+  | let chars = graphemes(rest)
+  | {kind: "set", name: name, ast: _marl_expr(trim(_marl_slice(chars, 1, len(chars))), at), at: at}
+end
+
+def marl_compile(template, source_name = "<template>"):
+  let tokens = _marl_scan(template, source_name)
+  | let parsed = _marl_block(tokens, 0)
+  | if (parsed[:pos] != len(tokens)):
+      _marl_error("Unexpected closing tag '" + _marl_word(tokens[parsed[:pos]][:source])[:word] + "'",
+        tokens[parsed[:pos]][:at])
+    else: {kind: "template", items: parsed[:items]}
+end
+
+def _marl_output(value):
+  if (is_none(value)): "" else: to_string(value)
+end
+
+def _marl_value(ast, value, env, at):
+  try: mqmq::mqmq_eval_ast(ast, value, env)
+  catch(e): _marl_error(e[:message], at)
+end
+
+def _marl_render_nodes(items, value, env):
+  var current_env = env
+  | let parts = foreach (node, items):
+      let kind = node[:kind]
+      | if (kind == "text"): node[:text]
+        elif (kind == "expr"):
+          _marl_output(_marl_value(node[:ast], value, current_env, node[:at]))
+        elif (kind == "set") do
+          let result = _marl_value(node[:ast], value, current_env, node[:at])
+          | current_env = set(current_env, node[:name], result)
+          | ""
+        end
+        elif (kind == "if") do
+          let condition = _marl_value(node[:cond], value, current_env, node[:at])
+          | let branch = if (condition): node[:then_part] else: node[:else_part]
+          | let result = _marl_render_nodes(branch, value, current_env)
+          | current_env = result[:env]
+          | result[:text]
+        end
+        elif (kind == "for") do
+          let items = _marl_value(node[:iter], value, current_env, node[:at])
+          | if (!is_array(items)): _marl_error("For expects an array", node[:at])
+          | let size = len(items)
+          | if (size == 0) do
+              let result = _marl_render_nodes(node[:else_part], value, current_env)
+              | current_env = result[:env]
+              | result[:text]
+            end
+            else:
+              join(foreach (i, range(0, size - 1)):
+                let item = items[i]
+                | let loop_env = dict(entries(current_env) +
+                    [[node[:name], item], ["iteration",
+                      {index: i + 1, index0: i, first: i == 0, last: i == size - 1, length: size}]])
+                | _marl_render_nodes(node[:body], item, loop_env)[:text]
+              end, "")
+        end
+        else: error("Unknown template node kind '" + kind + "'")
+    end
+  | {text: join(parts, ""), env: current_env}
+end
+
+# Data dictionary keys are available as bare names. Explicit env bindings
+# override data keys. A loop changes '.' to its current item.
+def marl_render_ast(ast, data, env = {}):
+  let data_env = if (is_dict(data)): entries(data) else: []
+  | let initial = dict(data_env + entries(env) + [["__nodes__", data]])
+  | _marl_render_nodes(ast[:items], data, initial)[:text]
+end
+
+def marl_render(template, data, env = {}, source_name = "<template>"):
+  marl_render_ast(marl_compile(template, source_name), data, env)
+end
+
+def marl(template):
+  marl_render(template, self)
+end
