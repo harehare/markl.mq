@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="flowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2B5773"/>
+      <stop offset="100%" stop-color="#61AFEF"/>
+    </linearGradient>
+  </defs>
+  <!-- template braces: { } -->
+  <path d="M22 22 Q14 22 14 30 L14 42 Q14 50 8 50 Q14 50 14 58 L14 70 Q14 78 22 78"
+        fill="none" stroke="url(#flowGradient)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M78 22 Q86 22 86 30 L86 42 Q86 50 92 50 Q86 50 86 58 L86 70 Q86 78 78 78"
+        fill="none" stroke="url(#flowGradient)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- mq's pipeline "M" -->
+  <path d="M32 64 L32 36 L41 36 L50 54 L59 36 L68 36 L68 64"
+        fill="none" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

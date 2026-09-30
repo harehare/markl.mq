@@ -1,6 +1,13 @@
-<h1 align="center">markl</h1>
+<div align="center">
+  <img src="assets/logo.svg" style="width: 128px; height: 128px;"/>
 
-A Markdown template engine written in [mq](https://github.com/harehare/mq). Markl renders text with expressions evaluated by [mqmq](https://github.com/harehare/mqmq), an mq interpreter written in mq.
+<h1>markl.mq</h1>
+
+**A Markdown template engine written in [mq](https://github.com/harehare/mq).**
+
+</div>
+
+markl.mq renders text with `{{ expression }}` tags evaluated by [mqmq](https://github.com/harehare/mqmq), an mq interpreter written in mq.
 
 ## Features
 
@@ -9,6 +16,9 @@ A Markdown template engine written in [mq](https://github.com/harehare/mq). Mark
 - Repeat content with `{% for name in array %}`, render an `{% else %}` branch for an empty array, and access loop positions through `iteration`.
 - Bind values for later tags with `{% set name = expression %}`.
 - Ignore `{# comments #}` or preserve literal template syntax inside `{% raw %}` blocks.
+- Transform values with filters such as `{{ title | h1 }}`, `{{ plot | blockquote }}`, and `{{ tags | wikilink }}`.
+- Generate YAML front matter with `frontmatter()`.
+- Control whitespace with `{%- -%}`, `{{- -}}`, and `{#- -#}`.
 - Compile a template once for repeated rendering.
 - Report template source, line, and column for compile and render errors.
 
@@ -22,7 +32,7 @@ git clone --recurse-submodules <repository-url>
 git submodule update --init
 ```
 
-Run the commands below from `markl.mq`. The `-L vendor/mqmq` option lets `import "mqmq"` resolve mqmq and its own modules.
+Run the commands below from the `markl.mq` directory. The `-L vendor/mqmq` option lets `import "mqmq"` resolve mqmq and its own modules.
 
 ## Usage
 
@@ -35,11 +45,10 @@ mq -I null -F text -L . -L vendor/mqmq \
 
 ```markdown
 # Notes
+
 - one
 - two
 ```
-
-The repository is named **markl.mq**; the module and public function names use **marl**.
 
 ### Render a template file
 
@@ -54,7 +63,7 @@ Given `page.md`:
 and `data.json`:
 
 ```json
-{"title":"Notes","items":["one","two"]}
+{ "title": "Notes", "items": ["one", "two"] }
 ```
 
 load the template as a raw string and pass each JSON input value as data:
@@ -74,16 +83,66 @@ mq -I null -F text -L . -L vendor/mqmq \
 # => Hello, Ada!
 ```
 
+### Compile to a single `.mqc` program
+
+`mq compile` bundles `marl.mq` and mqmq into one `markl.mqc` program. The compiled program runs without `-L`, so it works from any directory:
+
+```sh
+mq compile -I json -L . -L vendor/mqmq -o markl.mqc \
+  'include "marl" | marl_render(template, .)'
+
+mq -I json -F text --rawfile template page.md markl.mqc data.json
+```
+
+Pass the same `-I` to `mq compile` and when running the `.mqc` program. `-F` is a run-time option only. The `.mqc` format is experimental, so recompile after upgrading mq.
+
 ## Template syntax
 
-| Syntax | Effect |
+| Syntax                                                                   | Effect                                                                                       |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `{{ expression }}`                                                       | Evaluate an mqmq expression and insert its result                                            |
+| `{# comment #}`                                                          | Ignore the comment                                                                           |
+| `{% if expression %}...{% elif expression %}...{% else %}...{% endif %}` | Render the first matching branch                                                             |
+| `{% for name in expression %}...{% else %}...{% endfor %}`               | Render once for each item in an array, or render the optional `else` branch when it is empty |
+| `{% set name = expression %}`                                            | Bind a value for later tags                                                                  |
+| `{% raw %}...{% endraw %}`                                               | Insert the contents literally, without interpreting template tags                            |
+
+### Whitespace control
+
+Add `-` inside a tag's delimiter to strip the whitespace (including newlines) on that side: `{{-`, `{%-`, and `{#-` strip before the tag, and `-}}`, `-%}`, and `-#}` strip after it. This keeps block tags from leaving blank lines in the output:
+
+```text
+{% for item in items -%}
+- {{ item }}
+{% endfor -%}
+```
+
+### Filters
+
+Expressions are mq, so the pipe operator works as a filter. Markdown formatting functions from mqmq are available:
+
+| Filter | Result |
 |---|---|
-| `{{ expression }}` | Evaluate an mqmq expression and insert its result |
-| `{# comment #}` | Ignore the comment |
-| `{% if expression %}...{% elif expression %}...{% else %}...{% endif %}` | Render the first matching branch |
-| `{% for name in expression %}...{% else %}...{% endfor %}` | Render once for each item in an array, or render the optional `else` branch when it is empty |
-| `{% set name = expression %}` | Bind a value for later tags |
-| `{% raw %}...{% endraw %}` | Insert the contents literally, without interpreting template tags |
+| `{{ title \| h1 }}` ... `h6` | `# Title` ... |
+| `{{ plot \| blockquote }}` | `> plot` (per line) |
+| `{{ name \| bold }}`, `italic`, `strike`, `code_inline` | `**name**`, `*name*`, `~~name~~`, `` `name` `` |
+| `{{ code("rust") }}` | fenced code block around the current value |
+| `{{ wikilink(tags) }}` | `[[tag]]` for a value or each item of an array |
+| `{{ value \| yaml_property("key") }}` | one YAML property, `key: value` |
+
+markl adds three helpers. The piped value is always the last argument:
+
+| Helper | Result |
+|---|---|
+| `{{ x \| default("n/a") }}` | the fallback when `x` is `None` or `""` |
+| `{{ text \| link("https://example.com") }}` | `[text](https://example.com)` |
+| `{{ meta \| frontmatter() }}` | a `---` YAML front matter block from a dict; `None` values are skipped |
+
+```text
+{{ {title: title, tags: tags, date: date} | frontmatter() }}# {{ title }}
+```
+
+Pipes cannot appear inside call arguments (mqmq limitation); nest calls instead, for example `{{ join(wikilink(tags), ", ") }}`. A key missing from the data is an error, so use `data[:key] | default(...)` for optional values.
 
 Expression results use `to_string`; `None` renders as an empty string. Markl does not HTML-escape inserted values.
 
@@ -108,12 +167,12 @@ Expressions follow mqmq's supported query language. See [mqmq's README](https://
 
 ## API
 
-| Function | Description |
-|---|---|
-| `marl_render(template, data, env = {}, source_name = "<template>")` | Compile and render a template to a string |
-| `marl_compile(template, source_name = "<template>")` | Parse a template into a reusable AST |
-| `marl_render_ast(ast, data, env = {})` | Render a compiled template with new data |
-| `marl(template)` | Render using the current pipeline value as data |
+| Function                                                            | Description                                     |
+| ------------------------------------------------------------------- | ----------------------------------------------- |
+| `marl_render(template, data, env = {}, source_name = "<template>")` | Compile and render a template to a string       |
+| `marl_compile(template, source_name = "<template>")`                | Parse a template into a reusable AST            |
+| `marl_render_ast(ast, data, env = {})`                              | Render a compiled template with new data        |
+| `marl(template)`                                                    | Render using the current pipeline value as data |
 
 For repeated rendering, compile once:
 
