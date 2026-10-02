@@ -215,6 +215,10 @@ def _marl_block(tokens, pos):
               node = _marl_set(rest, tok[:at])
               | cur += 1
             end
+            elif (word == "include") do
+              node = {kind: "include", ast: _marl_expr(rest, tok[:at]), at: tok[:at]}
+              | cur += 1
+            end
             else: _marl_error("Unknown template tag '" + word + "'", tok[:at])
         end
       | reversed = [node, reversed]
@@ -296,12 +300,21 @@ end
 # The piped value is the last argument: `x | default(d)`, `text | link(url)`,
 # `dict | frontmatter`. `default` replaces None and empty strings; `link` builds
 # a Markdown link; `frontmatter` renders a dict as a YAML front matter block,
-# skipping None values.
+# skipping None values. `indent(n)` indents every line but the first, so
+# multi-line values stay inside list items. `bullets` and `numbered` render
+# arrays as lists, `table(headers)` renders arrays (or dicts keyed by header)
+# as a table, `escape_md` escapes Markdown syntax, `truncate(n)` shortens text.
 def _marl_helper_sources():
   [
-    "def default(d, v = .): if (is_none(v) || v == \"\"): d else: v end end",
+    "def default(d, v = .): if (is_none(v) || v == \"\") : d else: v end end",
     "def link(url, text = .): \"[\" + to_string(text) + \"](\" + to_string(url) + \")\" end",
-    "def frontmatter(m = .): \"---\\n\" + join(map(filter(entries(m), fn(e): !is_none(e[1]) end), fn(e): e[1] | yaml_property(e[0]) end), \"\\n\") + \"\\n---\\n\" end"
+    "def frontmatter(m = .): \"---\\n\" + join(map(filter(entries(m), fn(e): !is_none(e[1]) end), fn(e): e[1] | yaml_property(e[0]) end), \"\\n\") + \"\\n---\\n\" end",
+    "def indent(n, v = .): let lines = split(to_string(v), \"\\n\") | join(map(range(0, len(lines) - 1), fn(i): if (i == 0 || lines[i] == \"\"): lines[i] else: (\" \" * n) + lines[i] end), \"\\n\") end",
+    "def bullets(v = .): let ind = fn(n, x): join(map(split(to_string(x), \"\\n\"), fn(l): if (l == \"\"): l else: (\" \" * n) + l end), \"\\n\") end | join(map(v, fn(x): \"- \" + ind(2, x)[2:] end), \"\\n\") end",
+    "def numbered(v = .): let ind = fn(n, x): join(map(split(to_string(x), \"\\n\"), fn(l): if (l == \"\"): l else: (\" \" * n) + l end), \"\\n\") end | join(map(range(0, len(v) - 1), fn(i): let label = to_string(i + 1) + \". \" | label + ind(len(label), v[i])[len(label):] end), \"\\n\") end",
+    "def escape_md(v = .): fold([\"\\\\\", \"`\", \"*\", \"_\", \"[\", \"]\", \"<\", \">\", \"|\", \"~\", \"#\"], to_string(v), fn(acc, c): replace(acc, c, \"\\\\\" + c) end) end",
+    "def truncate(n, v = .): let s = to_string(v) | if (len(s) > n): s[0:(n)] + \"…\" else: s end end",
+    "def table(headers, rows = .): let cell = fn(c): replace(replace(to_string(if (is_none(c)): \"\" else: c), \"|\", \"\\\\|\"), \"\\n\", \" \") end | let line = fn(cells): \"| \" + join(map(cells, cell), \" | \") + \" |\" end | let pad = fn(r): map(range(0, len(headers) - 1), fn(i): if (i < len(r)): r[i] else: \"\") end | let body = map(rows, fn(r): line(if (is_dict(r)): map(headers, fn(h): r[h] end) else: pad(r)) end) | join([line(headers), line(map(headers, fn(h): \"---\" end))] + body, \"\\n\") end"
   ]
 end
 
@@ -312,8 +325,14 @@ def _marl_helpers():
   end))
 end
 
-def marl_compile(template, source_name = "<template>"):
-  let tokens = _marl_scan(template, source_name)
+# Options are a dict of atom keys; a missing key takes its default.
+def _marl_option(options, key, default):
+  let value = options[key]
+  | if (is_none(value)): default else: value
+end
+
+def marl_compile(template, options = {}):
+  let tokens = _marl_scan(template, _marl_option(options, :source_name, "<template>"))
   | let parsed = _marl_block(tokens, 0)
   | if (parsed[:pos] != len(tokens)):
       _marl_error("Unexpected closing tag '" + _marl_word(tokens[parsed[:pos]][:source])[:word] + "'",
@@ -325,9 +344,29 @@ def _marl_output(value):
   if (is_none(value)): "" else: to_string(value)
 end
 
+# Does the expression call a function with this name?
+def _marl_has_call(node, name):
+  if (is_dict(node)):
+    node[:kind] == "call" && node[:name] == name ||
+      any(values(node), fn(child): _marl_has_call(child, name) end)
+  elif (is_array(node)): any(node, fn(child): _marl_has_call(child, name) end)
+  else: false
+end
+
+# mqmq reports a missing bare name as an unknown function. When the expression
+# has no such call, it is an undefined variable: lenient rendering binds it to
+# None and retries, strict rendering reports it.
+def _marl_recover(message, ast, value, env, at):
+  let prefix = "Unknown function: "
+  | let name = if (starts_with(message, prefix)): message[len(prefix):] else: None
+  | if (is_none(name) || _marl_has_call(ast, name)): _marl_error(message, at)
+    elif (env["__lenient__"] == true): _marl_value(ast, value, set(env, name, None), at)
+    else: _marl_error("Undefined variable '" + name + "'", at)
+end
+
 def _marl_value(ast, value, env, at):
   try: mqmq::mqmq_eval_ast(ast, value, env)
-  catch(e): _marl_error(e[:message], at)
+  catch(e): _marl_recover(e[:message], ast, value, env, at)
 end
 
 def _marl_render_nodes(items, value, env):
@@ -342,6 +381,15 @@ def _marl_render_nodes(items, value, env):
           | current_env = set(current_env, node[:name], result)
           | ""
         end
+        elif (kind == "include") do
+          let name = _marl_value(node[:ast], value, current_env, node[:at])
+          | let partials = current_env["__partials__"]
+          | let depth = current_env["__depth__"]
+          | if (!is_dict(partials) || is_none(partials[name])): _marl_error("Unknown partial '" + to_string(name) + "'", node[:at])
+          | if (depth >= 16): _marl_error("Include nesting is too deep at '" + to_string(name) + "'", node[:at])
+          | let ast = marl_compile(partials[name], {source_name: to_string(name)})
+          | _marl_render_nodes(ast[:items], value, set(current_env, "__depth__", depth + 1))[:text]
+        end
         elif (kind == "if") do
           let condition = _marl_value(node[:cond], value, current_env, node[:at])
           | let branch = if (condition): node[:then_part] else: node[:else_part]
@@ -351,8 +399,9 @@ def _marl_render_nodes(items, value, env):
         end
         elif (kind == "for") do
           let items = _marl_value(node[:iter], value, current_env, node[:at])
-          | if (!is_array(items)): _marl_error("For expects an array", node[:at])
-          | let size = len(items)
+          | if (!is_array(items) && !(is_none(items) && current_env["__lenient__"] == true)):
+              _marl_error("For expects an array", node[:at])
+          | let size = if (is_none(items)): 0 else: len(items)
           | if (size == 0) do
               let result = _marl_render_nodes(node[:else_part], value, current_env)
               | current_env = result[:env]
@@ -374,14 +423,16 @@ end
 
 # Data dictionary keys are available as bare names. Explicit env bindings
 # override data keys. A loop changes '.' to its current item.
-def marl_render_ast(ast, data, env = {}):
+def marl_render_ast(ast, data, options = {}):
   let data_env = if (is_dict(data)): entries(data) else: []
-  | let initial = dict(entries(ast[:helpers]) + data_env + entries(env) + [["__nodes__", data]])
+  | let initial = dict(entries(ast[:helpers]) + data_env + entries(_marl_option(options, :env, {})) +
+      [["__nodes__", data], ["__partials__", _marl_option(options, :partials, {})], ["__depth__", 0],
+       ["__lenient__", _marl_option(options, :lenient, false)]])
   | _marl_render_nodes(ast[:items], data, initial)[:text]
 end
 
-def marl_render(template, data, env = {}, source_name = "<template>"):
-  marl_render_ast(marl_compile(template, source_name), data, env)
+def marl_render(template, data, options = {}):
+  marl_render_ast(marl_compile(template, options), data, options)
 end
 
 def marl(template):

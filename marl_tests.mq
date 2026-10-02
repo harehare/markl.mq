@@ -7,7 +7,7 @@ def test_text_expressions_and_filters():
 end
 
 def test_none_and_extra_environment():
-  assert_eq(marl_render("{{ value }}-{{ extra }}", {value: None}, {extra: 3}), "-3")
+  assert_eq(marl_render("{{ value }}-{{ extra }}", {value: None}, {env: {extra: 3}}), "-3")
 end
 
 def test_quoted_delimiter_and_comment():
@@ -21,10 +21,10 @@ def test_raw_block_preserves_template_syntax():
 end
 
 def test_raw_block_reports_opening_tag_and_tracks_following_lines():
-  let unclosed = try: marl_compile("é\r\n{% raw %}\r\n{{ ignored }}", "page.md")
+  let unclosed = try: marl_compile("é\r\n{% raw %}\r\n{{ ignored }}", {source_name: "page.md"})
                  catch(e): e[:message]
   | let after = try: marl_render("{% raw %}\r\n{{ ignored }}\r\n{% endraw %}\r\n{{ missing() }}",
-                  {}, {}, "page.md")
+                  {}, {source_name: "page.md"})
                 catch(e): e[:message]
   | assert_eq(unclosed, "page.md:2:1: Unclosed raw block")
   | assert_eq(after, "page.md:4:1: Unknown function: missing")
@@ -59,9 +59,9 @@ def test_nested_for_else_and_binding_scope():
 end
 
 def test_for_else_rejects_malformed_closing_tags():
-  let extra = try: marl_compile("{% for item in items %}x{% else extra %}empty{% endfor %}", "list.md")
+  let extra = try: marl_compile("{% for item in items %}x{% else extra %}empty{% endfor %}", {source_name: "list.md"})
               catch(e): e[:message]
-  | let wrong = try: marl_compile("{% for item in items %}x{% else %}empty{% endif %}", "list.md")
+  | let wrong = try: marl_compile("{% for item in items %}x{% else %}empty{% endif %}", {source_name: "list.md"})
               catch(e): e[:message]
   | assert_eq(starts_with(extra, "list.md:1:25: Unexpected text after 'else'"), true)
   | assert_eq(starts_with(wrong, "list.md:1:40: Expected endfor"), true)
@@ -94,11 +94,11 @@ def test_invalid_blocks_and_iterables():
 end
 
 def test_compile_errors_report_template_location():
-  let unknown = try: marl_compile("é\r\n x {% nope %}", "unicode.md")
+  let unknown = try: marl_compile("é\r\n x {% nope %}", {source_name: "unicode.md"})
                 catch(e): e[:message]
-  | let unclosed = try: marl_compile("x\n{% if true %}x", "page.md")
+  | let unclosed = try: marl_compile("x\n{% if true %}x", {source_name: "page.md"})
                    catch(e): e[:message]
-  | let invalid_expr = try: marl_compile("a\n{{ 1 + }}", "page.md")
+  | let invalid_expr = try: marl_compile("a\n{{ 1 + }}", {source_name: "page.md"})
                        catch(e): e[:message]
   | assert_eq(unknown, "unicode.md:2:4: Unknown template tag 'nope'")
   | assert_eq(unclosed, "page.md:2:1: Unclosed template block")
@@ -106,10 +106,10 @@ def test_compile_errors_report_template_location():
 end
 
 def test_render_errors_keep_compiled_tag_location():
-  let ast = marl_compile("one\n{% for item in items %}\n{{ missing() }}\n{% endfor %}", "view.md")
+  let ast = marl_compile("one\n{% for item in items %}\n{{ missing() }}\n{% endfor %}", {source_name: "view.md"})
   | let failure = try: marl_render_ast(ast, {items: [1]})
                   catch(e): e[:message]
-  | let bad_iter = try: marl_render("x\n{% for item in n %}x{% endfor %}", {n: 3}, {}, "page.md")
+  | let bad_iter = try: marl_render("x\n{% for item in n %}x{% endfor %}", {n: 3}, {source_name: "page.md"})
                    catch(e): e[:message]
   | assert_eq(failure, "view.md:3:1: Unknown function: missing")
   | assert_eq(bad_iter, "page.md:2:1: For expects an array")
@@ -122,7 +122,7 @@ def test_whitespace_control_trims_around_tags():
 end
 
 def test_whitespace_control_keeps_line_tracking():
-  let failure = try: marl_render("a\n  {{- x -}}  \n{{ missing() }}", {x: 1}, {}, "page.md")
+  let failure = try: marl_render("a\n  {{- x -}}  \n{{ missing() }}", {x: 1}, {source_name: "page.md"})
                 catch(e): e[:message]
   | assert_eq(failure, "page.md:3:1: Unknown function: missing")
 end
@@ -132,4 +132,105 @@ def test_helpers_default_link_frontmatter():
   | assert_eq(marl_render("{{ \"go\" | link(\"http://x\") }} {{ link(\"u\", \"b\") }}", {}), "[go](http://x) [b](u)")
   | assert_eq(marl_render("{{ meta | frontmatter() }}{{ title | h1 }}", {title: "T", meta: {title: "T", tags: ["a"], skip: None}}),
       "---\ntitle: T\ntags:\n  - a\n---\n# T")
+end
+
+def test_include_partials():
+  let partials = {head: "# {{ title }}\n", item: "- {{ item }}\n"}
+  | assert_eq(marl_render("{% include \"head\" %}{% for item in items %}{% include \"item\" %}{% endfor %}",
+      {title: "T", items: ["a", "b"]}, {source_name: "page.md", partials: partials}), "# T\n- a\n- b\n")
+  | let missing = try: marl_render("{% include \"nope\" %}", {}, {source_name: "page.md", partials: partials})
+                  catch(e): e[:message]
+  | assert_eq(missing, "page.md:1:1: Unknown partial 'nope'")
+  | let recursive = try: marl_render("{% include \"a\" %}", {}, {source_name: "page.md", partials: {a: "{% include \"a\" %}"}})
+               catch(e): e[:message]
+  | assert_eq(recursive, "a:1:1: Include nesting is too deep at 'a'")
+end
+
+def test_helpers_indent_lists_table_escape_truncate():
+  assert_eq(marl_render("{{ text | indent(2) }}", {text: "a\n\nb"}), "a\n\n  b")
+  | assert_eq(marl_render("{{ bullets(items) }}", {items: ["x\ny", "z"]}), "- x\n  y\n- z")
+  | assert_eq(marl_render("{{ items | numbered() }}", {items: ["a", "b"]}), "1. a\n2. b")
+  | assert_eq(marl_render("{{ s | escape_md() }}", {s: "a*b_c|d"}), "a\\*b\\_c\\|d")
+  | assert_eq(marl_render("{{ \"abcdef\" | truncate(3) }}|{{ \"ab\" | truncate(3) }}", {}), "abc…|ab")
+  | assert_eq(marl_render("{{ rows | table([\"n\", \"a\"]) }}", {rows: [{n: "A", a: 1}, {n: "B", a: None}]}),
+      "| n | a |\n| --- | --- |\n| A | 1 |\n| B |  |")
+  | assert_eq(marl_render("{{ [[1, \"x|y\"]] | table([\"n\", \"a\"]) }}", {}),
+      "| n | a |\n| --- | --- |\n| 1 | x\\|y |")
+end
+
+def test_undefined_variables_strict_and_lenient():
+  let strict = try: marl_render("a\n{{ title }}", {}, {source_name: "page.md"})
+               catch(e): e[:message]
+  | assert_eq(strict, "page.md:2:1: Undefined variable 'title'")
+  | assert_eq(marl_render("[{{ a }}|{{ b | default(\"d\") }}|{% if c %}y{% else %}n{% endif %}]", {}, {source_name: "page.md", lenient: true}), "[|d|n]")
+  | let unknown = try: marl_render("{{ missing() }}", {}, {source_name: "page.md", lenient: true})
+                  catch(e): e[:message]
+  | assert_eq(unknown, "page.md:1:1: Unknown function: missing")
+  | assert_eq(marl_render("{% include \"p\" %}", {}, {source_name: "page.md", partials: {p: "<{{ x }}>"}, lenient: true}), "<>")
+end
+
+def _fail(template, data = {}, options = {}):
+  try: marl_render(template, data, options)
+  catch(e): e[:message]
+end
+
+def test_include_scope_and_context():
+  assert_eq(marl_render("{% set x = 1 %}{% include \"p\" %}{{ x }}", {}, {partials: {p: "{% set x = 2 %}{{ x }}"}}), "21")
+  | assert_eq(marl_render("{% for i in [1, 2] %}{% include \"p\" %}{% endfor %}", {},
+      {partials: {p: "<{{ . }}{{ i }}{{ iteration[:index] }}>"}}), "<111><222>")
+  | assert_eq(marl_render("{% include n %}", {n: "p"}, {partials: {p: "ok"}}), "ok")
+  | assert_eq(marl_render("a\n{%- include \"p\" -%}\n  b", {}, {partials: {p: "X"}}), "aXb")
+  | assert_eq(marl_render("{% include \"a\" %}", {}, {partials: {a: "[{% include \"b\" %}]", b: "{% raw %}{{ x }}{% endraw %}"}}), "[{{ x }}]")
+end
+
+def test_include_errors():
+  assert_eq(_fail("{% include \"p\" %}", {}, {partials: {p: "a\n{{ 1 + }}"}}), "p:2:1: Unexpected token: type=eof value=''")
+  | assert_eq(_fail("{% include \"p\" %}", {}, {partials: {p: "a\n{{ missing() }}"}}), "p:2:1: Unknown function: missing")
+  | assert_eq(_fail("x\n{% include \"p\" %}", {}, {source_name: "page.md"}), "page.md:2:1: Unknown partial 'p'")
+  | assert_eq(_fail("{% include %}", {}, {source_name: "page.md"}), "page.md:1:1: Expected an expression")
+end
+
+def test_options_env_and_defaults():
+  assert_eq(marl_render("{{ v }}", {v: 1}, {env: {v: 2}}), "2")
+  | assert_eq(marl_render("{{ v }}", {v: 1}, {}), "1")
+  | assert_eq(marl_render("{{ v }}", {v: 1}), "1")
+  | assert_eq(_fail("{{ nope() }}", {}, {source_name: "a.md"}), "a.md:1:1: Unknown function: nope")
+  | assert_eq(_fail("{{ nope() }}"), "<template>:1:1: Unknown function: nope")
+  | assert_eq(marl_render_ast(marl_compile("{{ x }}", {source_name: "a.md"}), {x: 1}, {env: {x: 3}}), "3")
+end
+
+def test_lenient_undefined_variables():
+  assert_eq(marl_render("{{ a[:b][:c] }}|{{ a[:b] | default(\"z\") }}", {a: {}}, {lenient: true}), "|z")
+  | assert_eq(marl_render("{% for i in xs %}{{ i }}{% else %}none{% endfor %}", {}, {lenient: true}), "none")
+  | assert_eq(marl_render("{% set y = x %}[{{ y }}]", {}, {lenient: true}), "[]")
+  | assert_eq(marl_render("{{ let t = 1 | t }}", {}), "1")
+  | assert_eq(_fail("{{ x }}|{{ f(y) }}", {}, {lenient: true}), "<template>:1:9: Unknown function: f")
+  | assert_eq(_fail("{% for i in xs %}x{% endfor %}", {}, {source_name: "p.md"}), "p.md:1:1: Undefined variable 'xs'")
+  | assert_eq(_fail("{% for i in n %}x{% endfor %}", {n: 3}, {lenient: true}), "<template>:1:1: For expects an array")
+end
+
+def test_helper_indent_and_lists_edge_cases():
+  assert_eq(marl_render("{{ \"a\" | indent(0) }}|{{ \"a\\nb\" | indent(4) }}", {}), "a|a\n    b")
+  | assert_eq(marl_render("{{ items | bullets() }}", {items: []}), "")
+  | assert_eq(marl_render("{{ items | bullets() }}", {items: [1, None, "x"]}), "- 1\n- \n- x")
+  | assert_eq(marl_render("{{ items | numbered() }}", {items: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j\nk"]}),
+      "1. a\n2. b\n3. c\n4. d\n5. e\n6. f\n7. g\n8. h\n9. i\n10. j\n    k")
+  | assert_eq(marl_render("{{ items | numbered() }}", {items: ["a\nb"]}), "1. a\n   b")
+end
+
+def test_helper_table_edge_cases():
+  assert_eq(marl_render("{{ [] | table([\"a\"]) }}", {}), "| a |\n| --- |")
+  | assert_eq(marl_render("{{ [{a: 1}] | table([\"a\", \"b\"]) }}", {}), "| a | b |\n| --- | --- |\n| 1 |  |")
+  | assert_eq(marl_render("{{ [[1]] | table([\"a\", \"b\"]) }}", {}), "| a | b |\n| --- | --- |\n| 1 |  |")
+  | assert_eq(marl_render("{{ [[\"x\\ny\", None, 3]] | table([\"a\", \"b\", \"c\"]) }}", {}), "| a | b | c |\n| --- | --- | --- |\n| x y |  | 3 |")
+end
+
+def test_helper_escape_truncate_default_edge_cases():
+  assert_eq(marl_render("{{ None | escape_md() }}|{{ 12 | escape_md() }}|{{ s | escape_md() }}", {s: "`[x](y)` <b> ~~ # \\"}),
+      "|12|\\`\\[x\\](y)\\` \\<b\\> \\~\\~ \\# \\\\")
+  | assert_eq(marl_render("{{ \"abc\" | truncate(3) }}|{{ \"abc\" | truncate(0) }}|{{ \"abcd\" | truncate(3) }}|{{ None | truncate(3) }}", {}),
+      "abc|…|abc…|")
+  | assert_eq(marl_render("{{ s | truncate(8) }}", {s: "héllo wörld 😀😀"}), "héllo wö…")
+  | assert_eq(marl_render("{{ \"\" | default(\"d\") }}|{{ 0 | default(\"d\") }}|{{ false | default(\"d\") }}", {}), "d|0|false")
+  | assert_eq(marl_render("{{ \"a|b\" | link(\"u\") }}", {}), "[a|b](u)")
 end

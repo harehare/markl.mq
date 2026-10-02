@@ -15,6 +15,7 @@ markl.mq renders text with `{{ expression }}` tags evaluated by [mqmq](https://g
 - Use `{% if %}`, `{% elif %}`, and `{% else %}` for conditional content.
 - Repeat content with `{% for name in array %}`, render an `{% else %}` branch for an empty array, and access loop positions through `iteration`.
 - Bind values for later tags with `{% set name = expression %}`.
+- Reuse partial templates with `{% include "name" %}`.
 - Ignore `{# comments #}` or preserve literal template syntax inside `{% raw %}` blocks.
 - Transform values with filters such as `{{ title | h1 }}`, `{{ plot | blockquote }}`, and `{{ tags | wikilink }}`.
 - Generate YAML front matter with `frontmatter()`.
@@ -105,6 +106,7 @@ Pass the same `-I` to `mq compile` and when running the `.mqc` program. `-F` is 
 | `{% if expression %}...{% elif expression %}...{% else %}...{% endif %}` | Render the first matching branch                                                             |
 | `{% for name in expression %}...{% else %}...{% endfor %}`               | Render once for each item in an array, or render the optional `else` branch when it is empty |
 | `{% set name = expression %}`                                            | Bind a value for later tags                                                                  |
+| `{% include "name" %}`                                                   | Render the partial `name` (from the `partials` argument) with the current data and bindings  |
 | `{% raw %}...{% endraw %}`                                               | Insert the contents literally, without interpreting template tags                            |
 
 ### Whitespace control
@@ -130,19 +132,37 @@ Expressions are mq, so the pipe operator works as a filter. Markdown formatting 
 | `{{ wikilink(tags) }}` | `[[tag]]` for a value or each item of an array |
 | `{{ value \| yaml_property("key") }}` | one YAML property, `key: value` |
 
-markl adds three helpers. The piped value is always the last argument:
+markl adds these helpers. The piped value is always the last argument:
 
 | Helper | Result |
 |---|---|
 | `{{ x \| default("n/a") }}` | the fallback when `x` is `None` or `""` |
 | `{{ text \| link("https://example.com") }}` | `[text](https://example.com)` |
 | `{{ meta \| frontmatter() }}` | a `---` YAML front matter block from a dict; `None` values are skipped |
+| `{{ text \| indent(2) }}` | indents every line except the first, so multi-line values stay inside list items |
+| `{{ items \| bullets() }}` / `{{ items \| numbered() }}` | an array as a `- ` or `1. ` list; multi-line items are indented |
+| `{{ rows \| table(["name", "age"]) }}` | a Markdown table; each row is an array, or a dict keyed by header. `\|` and newlines in cells are escaped |
+| `{{ text \| escape_md() }}` | escapes Markdown syntax characters with a backslash |
+| `{{ text \| truncate(80) }}` | cuts text to 80 characters and appends `…` |
 
 ```text
 {{ {title: title, tags: tags, date: date} | frontmatter() }}# {{ title }}
 ```
 
-Pipes cannot appear inside call arguments (mqmq limitation); nest calls instead, for example `{{ join(wikilink(tags), ", ") }}`. A key missing from the data is an error, so use `data[:key] | default(...)` for optional values.
+Pipes cannot appear inside call arguments (mqmq limitation); nest calls instead, for example `{{ join(wikilink(tags), ", ") }}`. A bare name missing from the data is an error (`Undefined variable 'name'`), so use `data[:key] | default(...)` for optional values, or render leniently (see below).
+
+### Undefined variables
+
+By default a name that is not in the data or environment is an error that points at the tag. Pass the `lenient: true` option to treat missing names as `None` instead, so they render as an empty string and are falsy in `if`. Calling an unknown function is always an error.
+
+### Partials
+
+`{% include "name" %}` renders another template with the current data and bindings. Partials come from the `partials` option, a dict of name to template string (markl does not read files). Includes can nest up to 16 levels, and `set` bindings inside a partial do not leak out:
+
+```sh
+mq -I null -F text -L . -L vendor/mqmq \
+  'include "marl" | marl_render("{% include \"head\" %}body", {title: "T"}, {source_name: "page.md", partials: {head: "# {{ title }}\n"}})'
+```
 
 Expression results use `to_string`; `None` renders as an empty string. Markl does not HTML-escape inserted values.
 
@@ -153,7 +173,7 @@ The data dictionary's keys are available as bare names. `.` starts as the data v
 {% endfor %}
 ```
 
-An optional environment dictionary adds bindings and overrides matching data keys. `{% set %}` bindings remain available later in the same scope, including after an `if` branch. Bindings created inside a `for` block stay inside that iteration.
+The `env` option adds bindings and overrides matching data keys. `{% set %}` bindings remain available later in the same scope, including after an `if` branch. Bindings created inside a `for` block stay inside that iteration.
 
 The `for` block's `else` branch runs only for an empty array. It uses the outer data value and bindings; values set there remain available after the loop. Use `raw` to show template syntax in Markdown examples:
 
@@ -167,12 +187,21 @@ Expressions follow mqmq's supported query language. See [mqmq's README](https://
 
 ## API
 
-| Function                                                            | Description                                     |
-| ------------------------------------------------------------------- | ----------------------------------------------- |
-| `marl_render(template, data, env = {}, source_name = "<template>")` | Compile and render a template to a string       |
-| `marl_compile(template, source_name = "<template>")`                | Parse a template into a reusable AST            |
-| `marl_render_ast(ast, data, env = {})`                              | Render a compiled template with new data        |
-| `marl(template)`                                                    | Render using the current pipeline value as data |
+| Function                                         | Description                                     |
+| ------------------------------------------------ | ----------------------------------------------- |
+| `marl_render(template, data, options = {})`      | Compile and render a template to a string       |
+| `marl_compile(template, options = {})`           | Parse a template into a reusable AST            |
+| `marl_render_ast(ast, data, options = {})`       | Render a compiled template with new data        |
+| `marl(template)`                                 | Render using the current pipeline value as data |
+
+Options is a dict; every key is optional:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `env` | `{}` | Extra bindings; they override matching data keys (render only) |
+| `source_name` | `"<template>"` | Template name used in error messages |
+| `partials` | `{}` | Dict of name to template string for `{% include %}` (render only) |
+| `lenient` | `false` | Treat undefined names as `None` instead of an error (render only) |
 
 For repeated rendering, compile once:
 
@@ -182,7 +211,7 @@ mq -I null -F text -L . -L vendor/mqmq \
 # => ["Hello, Ada!", "Hello, Lin!"]
 ```
 
-Pass `source_name` when compiling or rendering to identify the template in errors. Errors point to the opening tag, for example `page.md:3:1: Unknown function: missing`. Without a source name, errors use `<template>`.
+Pass the `source_name` option when compiling or rendering to identify the template in errors. Errors point to the opening tag, for example `page.md:3:1: Unknown function: missing`. Without a source name, errors use `<template>`.
 
 ## Tests
 
