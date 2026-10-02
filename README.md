@@ -40,7 +40,7 @@ Run the commands below from the `markl.mq` directory. The `-L vendor/mqmq` optio
 Include `marl.mq`, then pass a template string and a data value to `marl_render`:
 
 ```sh
-mq -I null -F text -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq \
   'include "marl" | marl_render("# {{ title }}\n{% for item in items %}- {{ item }}\n{% endfor %}", {title: "Notes", items: ["one", "two"]})'
 ```
 
@@ -70,7 +70,7 @@ and `data.json`:
 load the template as a raw string and pass each JSON input value as data:
 
 ```sh
-mq -I json -F text -L . -L vendor/mqmq --rawfile template page.md \
+mq -L . -L vendor/mqmq --rawfile template page.md \
   'include "marl" | marl_render(template, .)' data.json
 ```
 
@@ -79,23 +79,23 @@ mq -I json -F text -L . -L vendor/mqmq --rawfile template page.md \
 `marl(template)` renders against the current pipeline value (`self`):
 
 ```sh
-mq -I null -F text -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq \
   'include "marl" | {name: "Ada"} | marl("Hello, {{ name }}!")'
 # => Hello, Ada!
 ```
 
 ### Compile to a single `.mqc` program
 
-`mq compile` bundles `marl.mq` and mqmq into one `markl.mqc` program. The compiled program runs without `-L`, so it works from any directory:
+Bundle `marl.mq` and mqmq into one `markl.mqc` program that runs without `-L`:
 
 ```sh
 mq compile -I json -L . -L vendor/mqmq -o markl.mqc \
   'include "marl" | marl_render(template, .)'
 
-mq -I json -F text --rawfile template page.md markl.mqc data.json
+mq --rawfile template page.md markl.mqc data.json
 ```
 
-Pass the same `-I` to `mq compile` and when running the `.mqc` program. `-F` is a run-time option only. The `.mqc` format is experimental, so recompile after upgrading mq.
+The `.mqc` format is experimental, so recompile after upgrading mq.
 
 ## Template syntax
 
@@ -160,7 +160,7 @@ By default a name that is not in the data or environment is an error that points
 `{% include "name" %}` renders another template with the current data and bindings. Partials come from the `partials` option, a dict of name to template string (markl does not read files). Includes can nest up to 16 levels, and `set` bindings inside a partial do not leak out:
 
 ```sh
-mq -I null -F text -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq \
   'include "marl" | marl_render("{% include \"head\" %}body", {title: "T"}, {source_name: "page.md", partials: {head: "# {{ title }}\n"}})'
 ```
 
@@ -206,7 +206,7 @@ Options is a dict; every key is optional:
 For repeated rendering, compile once:
 
 ```sh
-mq -I null -F text -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq \
   'include "marl" | let ast = marl_compile("Hello, {{ name }}!") | [marl_render_ast(ast, {name: "Ada"}), marl_render_ast(ast, {name: "Lin"})]'
 # => ["Hello, Ada!", "Hello, Lin!"]
 ```
@@ -218,7 +218,7 @@ Pass the `source_name` option when compiling or rendering to identify the templa
 From the `markl.mq` directory, run:
 
 ```sh
-mq -e -I null -F text -L . -L vendor/mqmq -f run_tests.mq
+mq -e -I null -L . -L vendor/mqmq -f run_tests.mq
 ```
 
 ## Compatibility
