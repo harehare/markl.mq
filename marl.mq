@@ -387,8 +387,7 @@ def _marl_render_nodes(items, value, env):
           | let depth = current_env["__depth__"]
           | if (!is_dict(partials) || is_none(partials[name])): _marl_error("Unknown partial '" + to_string(name) + "'", node[:at])
           | if (depth >= 16): _marl_error("Include nesting is too deep at '" + to_string(name) + "'", node[:at])
-          | let source = partials[name]
-          | let ast = if (is_dict(source)): source else: marl_compile(source, {source_name: to_string(name)})
+          | let ast = marl_compile(partials[name], {source_name: to_string(name)})
           | _marl_render_nodes(ast[:items], value, set(current_env, "__depth__", depth + 1))[:text]
         end
         elif (kind == "if") do

@@ -30,5 +30,5 @@ include "marl_tests"
     test_case("helper_table_edge_cases", test_helper_table_edge_cases),
     test_case("helper_escape_truncate_default_edge_cases", test_helper_escape_truncate_default_edge_cases),
     test_case("render_all_and_each", test_render_all_and_each),
-    test_case("precompiled_partials_and_shared_helpers", test_precompiled_partials_and_shared_helpers)
+    test_case("shared_helpers_and_nested_include_errors", test_shared_helpers_and_nested_include_errors)
   ])

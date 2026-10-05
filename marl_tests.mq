@@ -247,10 +247,8 @@ def test_render_all_and_each():
   | assert_eq(marl_render_each("x", []), [])
 end
 
-def test_precompiled_partials_and_shared_helpers():
-  let head = marl_compile("# {{ t | upper }}\n", {source_name: "head"})
-  | assert_eq(marl_render("{% include \"head\" %}x", {t: "a"}, {partials: {head: head}}), "# A\nx")
-  | assert_eq(marl_compile("a")[:helpers], marl_compile("b")[:helpers])
+def test_shared_helpers_and_nested_include_errors():
+  assert_eq(marl_compile("a")[:helpers], marl_compile("b")[:helpers])
   | let bad = try: marl_render_all({"p.md": "{% include \"q.md\" %}", "q.md": "{{ missing() }}"}, {}) catch(e): e[:message]
   | assert_eq(bad, "q.md:1:1: Unknown function: missing")
 end
