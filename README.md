@@ -193,6 +193,8 @@ Expressions follow mqmq's supported query language. See [mqmq's README](https://
 | `marl_compile(template, options = {})`           | Parse a template into a reusable AST            |
 | `marl_render_ast(ast, data, options = {})`       | Render a compiled template with new data        |
 | `marl(template)`                                 | Render using the current pipeline value as data |
+| `marl_render_all(templates, data, options = {})` | Render a dict of name to template; returns a dict of name to output |
+| `marl_render_each(template, items, options = {})` | Render one template per item of an array; returns an array of outputs |
 
 Options is a dict; every key is optional:
 
@@ -212,6 +214,33 @@ mq -I null -L . -L vendor/mqmq \
 ```
 
 Pass the `source_name` option when compiling or rendering to identify the template in errors. Errors point to the opening tag, for example `page.md:3:1: Unknown function: missing`. Without a source name, errors use `<template>`.
+
+### Render multiple templates
+
+`marl_render_all` renders a dict of name to template string in one call. Every template is also available as a partial to the others (explicit `partials` win), and errors use the template's name, so a shared layout works like a static site generator:
+
+```sh
+mq -I null -L . -L vendor/mqmq \
+  'include "marl" | marl_render_all({"index.md": "{% include \"head.md\" %}Home", "about.md": "{% include \"head.md\" %}About", "head.md": "# {{ site }}\n"}, {site: "Notes"})'
+# => {"index.md": "# Notes\nHome", "about.md": "# Notes\nAbout", "head.md": "# Notes\n"}
+```
+
+`marl_render_each` renders one template for every item of an array, compiling it once.
+
+#### Read and write files
+
+These helpers use mq's `read_file`, `walk_files`, and `write_file`, which are disabled by default. Pass `--allow-read` (`-R`) to read and `--allow-write` (`-W`) to write; restrict them with `-R=PATH` if you like.
+
+| Function | Description |
+| --- | --- |
+| `marl_render_files(paths, data, options = {})` | Read each path and render with `marl_render_all`, keyed by path |
+| `marl_render_dir(dir, data, options = {})` | Render every file under `dir` ending with the `ext` option (default `".md"`). Keys are paths relative to `dir`, so partials are included as `{% include "sub/head.md" %}` |
+| `marl_write_all(outputs, dir)` | Write a dict of name to output below `dir` and return the written paths. Directories must already exist |
+
+```sh
+mq -I null -R -W -L . -L vendor/mqmq \
+  'include "marl" | marl_render_dir("content", {site: "Notes"}) | marl_write_all(., "public")'
+```
 
 ## Tests
 

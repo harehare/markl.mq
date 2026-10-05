@@ -234,3 +234,23 @@ def test_helper_escape_truncate_default_edge_cases():
   | assert_eq(marl_render("{{ \"\" | default(\"d\") }}|{{ 0 | default(\"d\") }}|{{ false | default(\"d\") }}", {}), "d|0|false")
   | assert_eq(marl_render("{{ \"a|b\" | link(\"u\") }}", {}), "[a|b](u)")
 end
+
+def test_render_all_and_each():
+  let pages = {"a.md": "{% include \"head.md\" %}A {{ site }}", "b.md": "B {{ site }}", "head.md": "# {{ site }}\n"}
+  | let out = marl_render_all(pages, {site: "S"})
+  | assert_eq(out["a.md"], "# S\nA S")
+  | assert_eq(out["b.md"], "B S")
+  | assert_eq(marl_render_all({"x.md": "{% include \"p\" %}"}, {}, {partials: {p: "P"}}), {"x.md": "P"})
+  | let failed = try: marl_render_all({"bad.md": "{{ missing() }}"}, {}) catch(e): e[:message]
+  | assert_eq(failed, "bad.md:1:1: Unknown function: missing")
+  | assert_eq(marl_render_each("- {{ n }}", [{n: 1}, {n: 2}]), ["- 1", "- 2"])
+  | assert_eq(marl_render_each("x", []), [])
+end
+
+def test_precompiled_partials_and_shared_helpers():
+  let head = marl_compile("# {{ t | upper }}\n", {source_name: "head"})
+  | assert_eq(marl_render("{% include \"head\" %}x", {t: "a"}, {partials: {head: head}}), "# A\nx")
+  | assert_eq(marl_compile("a")[:helpers], marl_compile("b")[:helpers])
+  | let bad = try: marl_render_all({"p.md": "{% include \"q.md\" %}", "q.md": "{{ missing() }}"}, {}) catch(e): e[:message]
+  | assert_eq(bad, "q.md:1:1: Unknown function: missing")
+end

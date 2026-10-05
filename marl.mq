@@ -337,7 +337,7 @@ def marl_compile(template, options = {}):
   | if (parsed[:pos] != len(tokens)):
       _marl_error("Unexpected closing tag '" + _marl_word(tokens[parsed[:pos]][:source])[:word] + "'",
         tokens[parsed[:pos]][:at])
-    else: {kind: "template", items: parsed[:items], helpers: _marl_helpers()}
+    else: {kind: "template", items: parsed[:items], helpers: _MARL_HELPERS}
 end
 
 def _marl_output(value):
@@ -387,7 +387,8 @@ def _marl_render_nodes(items, value, env):
           | let depth = current_env["__depth__"]
           | if (!is_dict(partials) || is_none(partials[name])): _marl_error("Unknown partial '" + to_string(name) + "'", node[:at])
           | if (depth >= 16): _marl_error("Include nesting is too deep at '" + to_string(name) + "'", node[:at])
-          | let ast = marl_compile(partials[name], {source_name: to_string(name)})
+          | let source = partials[name]
+          | let ast = if (is_dict(source)): source else: marl_compile(source, {source_name: to_string(name)})
           | _marl_render_nodes(ast[:items], value, set(current_env, "__depth__", depth + 1))[:text]
         end
         elif (kind == "if") do
@@ -438,3 +439,61 @@ end
 def marl(template):
   marl_render(template, self)
 end
+
+# Renders every template in a dict of name to template string. Each template
+# is compiled once for its own rendering, and all of them are also available as
+# partials to each other (explicit partials win). Errors name the template that
+# failed. Returns a dict of name to output.
+#
+# Partials stay strings on purpose: the render environment is handed to mqmq on
+# every expression, so putting every compiled AST in it made rendering grow
+# quadratically with the number of templates. Compiling a partial on include is
+# cheap now that helpers are shared.
+def marl_render_all(templates, data, options = {}):
+  let compiled = dict(foreach (name, keys(templates)):
+      [name, marl_compile(templates[name], dict(entries(options) + [[:source_name, name]]))]
+    end)
+  | let partials = dict(entries(templates) + entries(_marl_option(options, :partials, {})))
+  | let render_options = dict(entries(options) + [[:partials, partials]])
+  | dict(foreach (name, keys(compiled)): [name, marl_render_ast(compiled[name], data, render_options)] end)
+end
+
+# Renders one template once per item of an array of data values and returns
+# an array of outputs, compiling the template a single time.
+def marl_render_each(template, items, options = {}):
+  let ast = marl_compile(template, options)
+  | foreach (item, items): marl_render_ast(ast, item, options) end
+end
+
+def _marl_join_path(dir, name):
+  if (ends_with(dir, "/")): dir + name else: dir + "/" + name
+end
+
+# Reads each file with read_file (needs --allow-read) and renders them with
+# marl_render_all, keyed by the given path.
+def marl_render_files(paths, data, options = {}):
+  marl_render_all(dict(foreach (path, paths): [path, read_file(path)] end), data, options)
+end
+
+# Renders every file under a directory whose name ends with the `ext` option
+# (default ".md"). Keys are paths relative to the directory, so partials are
+# included by relative path, for example {% include "sub/head.md" %}.
+def marl_render_dir(dir, data, options = {}):
+  let ext = _marl_option(options, :ext, ".md")
+  | let names = filter(walk_files(dir), fn(name): ends_with(name, ext) end)
+  | marl_render_all(dict(foreach (name, names): [name, read_file(_marl_join_path(dir, name))] end), data, options)
+end
+
+# Writes a dict of name to output below a directory with write_file (needs
+# --allow-write). Directories must already exist. Returns the written paths.
+def marl_write_all(outputs, dir):
+  foreach (name, keys(outputs)):
+    let path = _marl_join_path(dir, name)
+    | write_file(path, outputs[name])
+    | path
+  end
+end
+
+# Compiled once when the module is included, then shared by every template.
+# mq requires a top-level `let` to be the last item in a module.
+let _MARL_HELPERS = _marl_helpers()
