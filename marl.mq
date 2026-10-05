@@ -59,6 +59,18 @@ def _marl_close(chars, pos, n, opener):
   | found
 end
 
+# Splits a template into a flat array of tokens. Every token is a dict with a
+# `kind`:
+#
+#   {kind: "text", text: String}                  literal text
+#   {kind: "expr", source: String, at: Position}  `{{ ... }}`, source is trimmed
+#   {kind: "stmt", source: String, at: Position}  `{% ... %}`, source is trimmed
+#
+# Comments never become tokens. Whitespace control (`{{-`, `-%}`, ...) is
+# already applied to the neighbouring text, and the body of `{% raw %}` is
+# emitted as a single text token. `Position` is
+# `{source_name: String, line: Number, column: Number}` (1-based) of the
+# opening delimiter, and is what error messages report.
 def _marl_scan(template, source_name):
   let chars = graphemes(template)
   | let n = len(chars)
@@ -331,6 +343,27 @@ def _marl_option(options, key, default):
   | if (is_none(value)): default else: value
 end
 
+# Compiles a template into an AST that marl_render_ast can render many times.
+#
+#   {kind: "template", items: [Node], helpers: {name: FnNode}}
+#
+# `items` (and every nested `then_part`, `else_part`, `body`) is an array of
+# nodes in source order:
+#
+#   {kind: "text", text: String}
+#   {kind: "expr", ast: Expr, at: Position}               {{ expr }}
+#   {kind: "set", name: String, ast: Expr, at: Position}  {% set name = expr %}
+#   {kind: "include", ast: Expr, at: Position}            {% include expr %}
+#   {kind: "if", cond: Expr, then_part: [Node], else_part: [Node], at: Position}
+#   {kind: "for", name: String, iter: Expr, body: [Node], else_part: [Node], at: Position}
+#
+# `Expr` is an mqmq AST (the result of mqmq::mqmq_compile), evaluated at render
+# time with mqmq::mqmq_eval_ast. `at` is the position of the opening tag (see
+# _marl_scan). `elif` has no node of its own: it is an `if` stored as the only
+# item of the parent's `else_part`. An `if` without `else` has `else_part: []`.
+# `include` keeps the partial name as an expression, and the partial itself is
+# compiled when it is included. `helpers` maps each helper name to an mqmq `fn`
+# node and is shared by every compiled template.
 def marl_compile(template, options = {}):
   let tokens = _marl_scan(template, _marl_option(options, :source_name, "<template>"))
   | let parsed = _marl_block(tokens, 0)
