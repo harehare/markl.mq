@@ -244,11 +244,13 @@ mq -I null -R -W -L . -L vendor/mqmq \
 
 ## Tests
 
-From the `markl.mq` directory, run:
+Tests are run with `mq-test`. From the `markl.mq` directory, run:
 
 ```sh
-mq -e -I null -L . -L vendor/mqmq -f run_tests.mq
+mq-test -L vendor/mqmq marl_tests.mq
 ```
+
+`-L` requires a `mq-test` release that supports `--directory`.
 
 ## Compatibility
 
