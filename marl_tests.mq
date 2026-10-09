@@ -252,3 +252,9 @@ def test_shared_helpers_and_nested_include_errors():
   | let bad = try: marl_render_all({"p.md": "{% include \"q.md\" %}", "q.md": "{{ missing() }}"}, {}) catch(e): e[:message]
   | assert_eq(bad, "q.md:1:1: Unknown function: missing")
 end
+
+def test_pipes_inside_call_arguments():
+  assert_eq(marl_render("{{ join(tags | map(fn(t): upper(t) end), \", \") }}", {tags: ["a", "b"]}), "A, B")
+  | assert_eq(marl_render("{{ join(tags | reverse, \"-\") }}/{{ len(tags | sort) }}", {tags: ["b", "a"]}), "a-b/2")
+  | assert_eq(marl_render("{{ tags | join(\"+\") }}", {tags: ["x", "y"]}), "x+y")
+end
