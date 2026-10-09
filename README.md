@@ -149,7 +149,7 @@ markl adds these helpers. The piped value is always the last argument:
 {{ {title: title, tags: tags, date: date} | frontmatter() }}# {{ title }}
 ```
 
-Pipes cannot appear inside call arguments (mqmq limitation); nest calls instead, for example `{{ join(wikilink(tags), ", ") }}`. A bare name missing from the data is an error (`Undefined variable 'name'`), so use `data[:key] | default(...)` for optional values, or render leniently (see below).
+Pipes work inside call arguments, so `{{ join(tags | map(fn(t): upper(t) end), ", ") }}` is valid. Pipes still cannot appear inside array items or dict values (as in mq); wrap them in a call or parentheses. A bare name missing from the data is an error (`Undefined variable 'name'`), so use `data[:key] | default(...)` for optional values, or render leniently (see below).
 
 ### Undefined variables
 

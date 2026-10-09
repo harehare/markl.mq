@@ -164,8 +164,14 @@ def _marl_word(source):
   | {word: _marl_slice(chars, 0, i), rest: trim(_marl_slice(chars, i, n))}
 end
 
+# mqmq_compile returns a compiled program that wraps the parsed AST in `ast`;
+# older mqmq versions returned the AST itself.
+def _marl_parsed(compiled):
+  if (compiled[:kind] == "compiled"): compiled[:ast] else: compiled
+end
+
 def _marl_name(name, at):
-  let ast = try: mqmq::mqmq_compile(name)
+  let ast = try: _marl_parsed(mqmq::mqmq_compile(name))
                catch(e): _marl_error(e[:message], at)
   | if (ast[:kind] != "ident"):
       _marl_error("Expected a variable name, got '" + name + "'", at)
@@ -332,7 +338,7 @@ end
 
 def _marl_helpers():
   dict(map(_marl_helper_sources(), fn(source):
-    let ast = mqmq::mqmq_compile(source)
+    let ast = _marl_parsed(mqmq::mqmq_compile(source))
     | [ast[:name], {kind: "fn", name: ast[:name], params: ast[:params], body: ast[:body], env: {}}]
   end))
 end
@@ -379,7 +385,8 @@ end
 
 # Does the expression call a function with this name?
 def _marl_has_call(node, name):
-  if (is_dict(node)):
+  if (is_dict(node) && node[:kind] == "compiled"): _marl_has_call(node[:ast], name)
+  elif (is_dict(node)):
     node[:kind] == "call" && node[:name] == name ||
       any(values(node), fn(child): _marl_has_call(child, name) end)
   elif (is_array(node)): any(node, fn(child): _marl_has_call(child, name) end)
