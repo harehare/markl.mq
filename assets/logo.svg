@@ -1,18 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <rect x="4" y="4" width="120" height="120" fill="#F6BE00"/>
-  <!-- # heading: the Markdown heading mark, then the heading line -->
-  <g fill="#1B1700">
-    <rect x="31" y="26" width="3" height="18"/>
-    <rect x="38" y="26" width="3" height="18"/>
-    <rect x="28" y="31" width="14" height="3"/>
-    <rect x="28" y="38" width="14" height="3"/>
-    <rect x="48" y="29" width="52" height="12"/>
-  </g>
-  <!-- body text, with a slot in the second line as in {{ value }} -->
-  <g fill="#1B1700" fill-opacity=".85">
-    <rect x="28" y="54" width="72" height="8"/>
-    <rect x="28" y="72" width="22" height="8"/>
-    <rect x="28" y="94" width="52" height="8"/>
-  </g>
-  <rect x="56" y="66" width="44" height="20" fill="#F26B1D"/>
+  <!-- M as the heading mark, followed by the heading line -->
+  <polygon points="28,59.4 28,32 34.2,32 43,44.4 51.8,32 58,32 58,59.4 51.8,59.4 51.8,43.9 43,56.3 34.2,43.9 34.2,59.4" fill="#1B1700"/>
+  <rect x="64" y="40" width="36" height="12" fill="#1B1700"/>
+  <!-- a line of text with a slot in it, as in {{ value }} -->
+  <rect x="28" y="82" width="22" height="8" fill="#1B1700" fill-opacity=".85"/>
+  <rect x="56" y="76" width="44" height="20" fill="#F26B1D"/>
 </svg>
