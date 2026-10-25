@@ -248,7 +248,9 @@ def test_render_all_and_each():
 end
 
 def test_shared_helpers_and_nested_include_errors():
-  assert_eq(marl_compile("a")[:helpers], marl_compile("b")[:helpers])
+  assert_eq(keys(marl_compile("a")[:helpers]), [])
+  | assert_eq(keys(marl_compile("{{ x | default(1) }}{% if y %}{{ link(\"u\", z) }}{% endif %}")[:helpers]), ["default", "link"])
+  | assert_eq(keys(marl_compile("{% for i in xs %}{{ map(xs, truncate) }}{% endfor %}")[:helpers]), ["truncate"])
   | let bad = try: marl_render_all({"p.md": "{% include \"q.md\" %}", "q.md": "{{ missing() }}"}, {}) catch(e): e[:message]
   | assert_eq(bad, "q.md:1:1: Unknown function: missing")
 end
@@ -257,4 +259,203 @@ def test_pipes_inside_call_arguments():
   assert_eq(marl_render("{{ join(tags | map(fn(t): upper(t) end), \", \") }}", {tags: ["a", "b"]}), "A, B")
   | assert_eq(marl_render("{{ join(tags | reverse, \"-\") }}/{{ len(tags | sort) }}", {tags: ["b", "a"]}), "a-b/2")
   | assert_eq(marl_render("{{ tags | join(\"+\") }}", {tags: ["x", "y"]}), "x+y")
+end
+
+def test_include_with_parameters():
+  let partials = {c: "[{{ type }}{{ n }}{{ x }}]"}
+  | assert_eq(marl_render("{% include \"c\" with {type: \"note\", n: 1 + 1} %}", {x: "!"}, {partials: partials}), "[note2!]")
+  | assert_eq(marl_render("{% include \"c\" with {type: \"a\", n: 0, x: \"own\"} %}{{ x }}", {x: "outer"}, {partials: partials}), "[a0own]outer")
+  | assert_eq(marl_render("{% include \"c\" with params %}", {params: {type: "p", n: 3, x: ""}}, {partials: partials}), "[p3]")
+  | assert_eq(marl_render("{% include \"c\" with {type: \"with\", n: 1, x: \" with \"} %}", {}, {partials: partials}), "[with1 with ]")
+  | assert_eq(_fail("{% include \"c\" with 3 %}", {}, {source_name: "page.md", partials: partials}), "page.md:1:1: With expects a dict")
+end
+
+def test_component_passes_body():
+  let partials = {callout: "> [!{{ upper(type) }}] {{ body }}"}
+  | assert_eq(marl_render("{% component \"callout\" with {type: \"tip\"} %}hi {{ x }}{% endcomponent %}|{{ type }}",
+      {x: 1, type: "outer"}, {partials: partials}), "> [!TIP] hi 1|outer")
+  | assert_eq(marl_render("{% component \"p\" %}{% for i in [1, 2] %}{{ i }}{% endfor %}{% endcomponent %}", {},
+      {partials: {p: "<{{ body }}>"}}), "<12>")
+  | assert_eq(_fail("{% component \"p\" %}x", {}, {source_name: "page.md"}), "page.md:1:1: Unclosed template block")
+  | assert_eq(_fail("{% component \"p\" %}x{% endif %}", {}, {source_name: "page.md"}), "page.md:1:21: Expected endcomponent")
+end
+
+def test_capture_binds_rendered_text():
+  assert_eq(marl_render("{% capture t %}a{{ 1 + 1 }}{% endcapture %}<{{ t }}>", {}), "<a2>")
+  | assert_eq(marl_render("{% capture t %}{% for i in [1, 2] %}{{ i }}{% endfor %}{% endcapture %}{{ t | upper }}{{ len(t) }}", {}), "122")
+  | assert_eq(starts_with(_fail("{% capture a b %}x{% endcapture %}", {}, {source_name: "page.md"}), "page.md:1:1: "), true)
+  | assert_eq(starts_with(_fail("{% capture 1 %}x{% endcapture %}", {}, {source_name: "page.md"}), "page.md:1:1: Expected a variable name"), true)
+end
+
+def test_extends_overrides_blocks():
+  let partials = {
+    base: "[{% block head %}H{% endblock %}|{% block main %}default {{ who }}{% endblock %}]",
+    mid: "{% extends \"base\" %}{% block head %}mid{% endblock %}",
+    top: "{% extends \"mid\" %}{% block main %}top{% endblock %}"}
+  | assert_eq(marl_render("{% extends \"base\" %}{% block main %}child {{ who }}{% endblock %}", {who: "W"}, {partials: partials}), "[H|child W]")
+  | assert_eq(marl_render("{% extends \"base\" %}", {who: "W"}, {partials: partials}), "[H|default W]")
+  | assert_eq(marl_render("{% extends \"top\" %}", {who: "W"}, {partials: partials}), "[mid|top]")
+  | assert_eq(marl_render("{% extends \"mid\" %}{% block head %}child{% endblock %}", {who: "W"}, {partials: partials}), "[child|default W]")
+  | assert_eq(marl_render("{% extends \"base\" %}text ignored{% set who = \"S\" %}", {}, {partials: partials}), "[H|default S]")
+  | assert_eq(marl_render("{% block a %}x{% endblock %}{% if true %}{% block b %}y{% endblock %}{% endif %}", {}), "xy")
+  | assert_eq(marl_render("{% extends \"p\" %}{% block b %}{{ . }}{% endblock %}", 7, {partials: {p: "{% for i in [1] %}{% block b %}{% endblock %}{% endfor %}"}}), "1")
+end
+
+def test_extends_errors():
+  assert_eq(_fail("x\n{% extends \"nope\" %}", {}, {source_name: "page.md"}), "page.md:2:1: Unknown partial 'nope'")
+  | assert_eq(_fail("{% extends \"a\" %}", {}, {partials: {a: "{% extends \"a\" %}"}}), "a:1:1: Include nesting is too deep at 'a'")
+  | assert_eq(_fail("{% block %}x{% endblock %}", {}, {source_name: "page.md"}), "page.md:1:1: Expected a name")
+  | assert_eq(_fail("{% block a %}x{% endif %}", {}, {source_name: "page.md"}), "page.md:1:15: Expected endblock")
+  | assert_eq(_fail("{% endblock %}", {}, {source_name: "page.md"}), "page.md:1:1: Unexpected closing tag 'endblock'")
+end
+
+def test_themes_resolve_partials_in_order():
+  let partials = {"default/c": "D", "zenn/c": "Z", "only.md": "O", "default/e.md": "E"}
+  | assert_eq(marl_render("{% include \"c\" %}", {}, {partials: partials, theme: ["zenn", "default"]}), "Z")
+  | assert_eq(marl_render("{% include \"c\" %}", {}, {partials: partials, theme: "default"}), "D")
+  | assert_eq(marl_render("{% include \"c\" %}{% include \"only\" %}{% include \"e\" %}{{ theme }}", {},
+      {partials: partials, theme: ["other", "default"]}), "DOEother")
+  | assert_eq(marl_render("{% include \"only.md\" %}{% include \"zenn/c\" %}", {}, {partials: partials}), "OZ")
+  | assert_eq(marl_render("{% include \"c\" %}", {}, {partials: {c: "plain", "t/c": "themed"}, theme: "t"}), "themed")
+  | assert_eq(marl_render("{{ theme }}", {theme: "data"}, {theme: "opt"}), "data")
+  | assert_eq(marl_render("{% if theme %}t{% else %}none{% endif %}", {}), "none")
+  | assert_eq(marl_render("{% include \"c.tmpl\" %}", {}, {partials: {"c.tmpl": "T"}, ext: ".tmpl"}), "T")
+  | assert_eq(marl_render("{% include \"c\" %}", {}, {partials: {"c.tmpl": "T"}, ext: ".tmpl"}), "T")
+end
+
+def test_parse_page_front_matter():
+  let page = marl_parse_page("---\ntitle: \"A: B\"\nn: 3\nratio: -1.5\nok: true\nno: false\nnone: ~\nname: Plain # kept\ntags: [a, \"b, c\", 'd']\nempty: []\nlist:\n  - x\n  - 2\nauthor:\n  name: Ada\n  links:\n    - u\nsummary: >\n  one\n  two\nbody: |\n  keep\n    indent\n# comment\nlast: end\n---\n\n\n# Body\n")
+  | assert_eq(page[:body], "# Body\n")
+  | assert_eq(page[:meta][:title], "A: B")
+  | assert_eq([page[:meta][:n], page[:meta][:ratio], page[:meta][:ok], page[:meta][:no], page[:meta][:none]], [3, -1.5, true, false, None])
+  | assert_eq(page[:meta][:name], "Plain # kept")
+  | assert_eq([page[:meta][:tags], page[:meta][:empty], page[:meta][:list]], [["a", "b, c", "d"], [], ["x", 2]])
+  | assert_eq(page[:meta][:author], {name: "Ada", links: ["u"]})
+  | assert_eq([page[:meta][:summary], page[:meta][:body], page[:meta][:last]], ["one two", "keep\n  indent", "end"])
+end
+
+def test_parse_page_without_front_matter():
+  assert_eq(marl_parse_page("# Title\n---\nx"), {meta: {}, body: "# Title\n---\nx"})
+  | assert_eq(marl_parse_page("---\ntitle: open"), {meta: {}, body: "---\ntitle: open"})
+  | assert_eq(marl_parse_page("---\r\ntitle: T\r\n---\r\nbody"), {meta: {title: "T"}, body: "body"})
+  | assert_eq(marl_parse_page("---\n---\nbody"), {meta: {}, body: "body"})
+  | assert_eq(marl_parse_page(""), {meta: {}, body: ""})
+end
+
+def test_render_page_with_layout_and_theme():
+  let partials = {layout: "<{{ page[:title] }}|{{ content }}|{{ site }}>", "alt/layout": "alt:{{ content }}", "wide/layout": "{% extends \"layout\" %}"}
+  | let text = "---\ntitle: T\n---\nHi {{ page[:title] }}"
+  | assert_eq(marl_render_page(text, {site: "S"}, {partials: partials}), "<T|Hi T|S>")
+  | assert_eq(marl_render_page(text, {site: "S"}, {partials: partials, theme: "alt"}), "alt:Hi T")
+  | assert_eq(marl_render_page("---\ntheme: alt\n---\nx", {}, {partials: partials}), "alt:x")
+  | assert_eq(marl_render_page("---\ntheme: alt\n---\nx", {site: "S"}, {partials: partials, theme: "none"}), "<|x|S>")
+  | assert_eq(marl_render_page("---\nlayout: false\n---\nx", {}, {partials: partials}), "x")
+  | assert_eq(marl_render_page("---\nlayout: alt/layout\n---\nx", {}, {partials: partials}), "alt:x")
+  | assert_eq(marl_render_page("x {{ page[:missing] | default(\"d\") }}", {}, {partials: partials, layout: "alt/layout"}), "alt:x d")
+  | assert_eq(marl_render_page("plain", {}), "plain")
+  | assert_eq(_fail("x", {}, {}), "x")
+  | let missing = try: marl_render_page("---\nlayout: nope\n---\nx", {}, {source_name: "a.md", partials: partials})
+                  catch(e): e[:message]
+  | assert_eq(missing, "a.md: Unknown layout 'nope'")
+end
+
+def test_render_page_errors_use_source_name():
+  let failure = try: marl_render_page("---\ntitle: T\n---\nline\n{{ missing() }}", {}, {source_name: "a.md"})
+                catch(e): e[:message]
+  | assert_eq(failure, "a.md:2:1: Unknown function: missing")
+end
+
+def test_render_pages_provides_page_index():
+  let pages = {
+    "old.md": "---\ntitle: Old\ndate: 2026-01-01\n---\nOld {{ page[:slug] }}",
+    "new.md": "---\ntitle: New\ndate: 2026-03-01\n---\n{% for p in pages %}{{ p[:slug] }}:{{ p[:title] }};{% endfor %}",
+    "sub/undated.md": "no front matter"}
+  | let out = marl_render_pages(pages, {})
+  | assert_eq(out["old.md"], "Old old")
+  | assert_eq(out["new.md"], "new:New;old:Old;sub/undated:;")
+  | assert_eq(out["sub/undated.md"], "no front matter")
+  | let layout = marl_render_pages({"a.md": "---\ntitle: A\n---\nbody"}, {site: "S"}, {partials: {layout: "{{ site }}/{{ page[:name] }}/{{ len(pages) }}/{{ content }}"}})
+  | assert_eq(layout, {"a.md": "S/a.md/1/body"})
+  | let failed = try: marl_render_pages({"bad.md": "{{ missing() }}"}, {}) catch(e): e[:message]
+  | assert_eq(failed, "bad.md:1:1: Unknown function: missing")
+end
+
+def test_article_helpers():
+  assert_eq(marl_render("{{ \"  Hello, World! mq -- 入門 \" | slugify }}|{{ \"\" | slugify }}", {}), "hello-world-mq-入門|")
+  | assert_eq(marl_render("{{ \"Hello, World! A_b-c\" | anchor }}", {}), "hello-world-a_b-c")
+  | assert_eq(marl_render("{{ \"hello\" | capitalize }}|{{ \"\" | capitalize }}", {}), "Hello|")
+  | assert_eq(marl_render("{{ \"2026-10-25\" | date(\"%b %d, %Y\") }}|{{ \"2026-10-25T13:00:00Z\" | date(\"%Y/%m/%d\") }}", {}), "Oct 25, 2026|2026/10/25")
+  | assert_eq(marl_render("{{ \"a b\\n c  d\" | word_count }}|{{ \"\" | word_count }}", {}), "4|0")
+  | assert_eq(marl_render("{{ \"word \" * 450 | reading_time }}|{{ \"short\" | reading_time }}|{{ \"あ\" * 1200 | reading_time }}", {}), "3|1|3")
+  | assert_eq(marl_render("{{ \"body\" | details(\"More\") }}", {}), "<details>\n<summary>More</summary>\n\nbody\n\n</details>")
+  | assert_eq(marl_render("{{ \"u.png\" | image(\"alt\") }}", {}), "![alt](u.png)")
+end
+
+def test_toc_helper():
+  let text = "# T\n## Intro\n```\n## code\n```\n### Sub `x`\n#### deep\n## Next Step\n"
+  | assert_eq(marl_render("{{ text | toc(2, 3) }}", {text: text}),
+      "- [Intro](#intro)\n  - [Sub x](#sub-x)\n- [Next Step](#next-step)")
+  | assert_eq(marl_render("{{ text | toc(1, 1) }}|{{ text | toc(5, 6) }}", {text: text}), "- [T](#t)|")
+end
+
+def test_helpers_reach_partials_and_blocks_that_use_them():
+  assert_eq(marl_render("{% include \"p\" %}", {s: "A B"}, {partials: {p: "{{ s | slugify }}"}}), "a-b")
+  | assert_eq(marl_render("{% component \"c\" %}{{ s | slugify }}{% endcomponent %}", {s: "A B"}, {partials: {c: "<{{ body }}>"}}), "<a-b>")
+  | assert_eq(marl_render("{% extends \"base\" %}{% block main %}{{ s | slugify }}{% endblock %}", {s: "A B"},
+      {partials: {base: "[{% block main %}{% endblock %}{{ \"x\" | capitalize }}]"}}), "[a-bX]")
+  | assert_eq(marl_render("{% for i in [1] %}{% include \"p\" %}{% endfor %}", {s: "A B"}, {partials: {p: "{{ s | slugify }}"}}), "a-b")
+  | assert_eq(marl_render("{{ default }}", {default: 5}), "5")
+  | assert_eq(marl_render("{% include \"p\" %}", {default: 5}, {partials: {p: "{{ default }}"}}), "5")
+end
+
+def test_literal_code_skips_fences_and_spans():
+  let lit = {literal_code: true}
+  | assert_eq(marl_render("{{ x }} `{{ x }}` {{ x }}", {x: 1}, lit), "1 `{{ x }}` 1")
+  | assert_eq(marl_render("``a `{{ x }}` b`` {{ x }}", {x: 1}, lit), "``a `{{ x }}` b`` 1")
+  | assert_eq(marl_render("```sh\n${{ s }} {% if %}\n```\n{{ x }}", {x: 1}, lit), "```sh\n${{ s }} {% if %}\n```\n1")
+  | assert_eq(marl_render("~~~\n{{ s }}\n~~~\n{{ x }}", {x: 1}, lit), "~~~\n{{ s }}\n~~~\n1")
+  | assert_eq(marl_render("````\n```\n{{ s }}\n```\n````\n{{ x }}", {x: 1}, lit), "````\n```\n{{ s }}\n```\n````\n1")
+  | assert_eq(marl_render("- item\n  ```\n  {{ s }}\n  ```\n{{ x }}", {x: 1}, lit), "- item\n  ```\n  {{ s }}\n  ```\n1")
+  | assert_eq(marl_render("```\n{{ s }}", {}, lit), "```\n{{ s }}")
+  | assert_eq(marl_render("```\n{{ s }}\n``\n{{ s }}\n```\nend", {}, lit), "```\n{{ s }}\n``\n{{ s }}\n```\nend")
+end
+
+def test_literal_code_edge_cases():
+  let lit = {literal_code: true}
+  | assert_eq(marl_render("a ` {{ x }}", {x: 1}, lit), "a ` 1")
+  | assert_eq(marl_render("`a\n\n{{ x }}`", {x: 1}, lit), "`a\n\n1`")
+  | assert_eq(marl_render("`a\n{{ x }}`", {x: 1}, lit), "`a\n{{ x }}`")
+  | assert_eq(marl_render("``x` {{ x }}", {x: 1}, lit), "``x` 1")
+  | assert_eq(marl_render("a ~ b {{ x }}", {x: 1}, lit), "a ~ b 1")
+  | assert_eq(marl_render("```not `a fence` {{ x }}", {x: 1}, lit), "```not `a fence` 1")
+  | assert_eq(marl_render("`{{ x }}`{{ x }}`{{ x }}`", {x: 1}, lit), "`{{ x }}`1`{{ x }}`")
+  | assert_eq(marl_render("{%- if true -%} `{{ x }}` {%- endif -%}", {x: 1}, lit), "`{{ x }}`")
+  | assert_eq(marl_render("{{ x }}`{{ x }}`", {x: 1}), "1`1`")
+end
+
+def test_literal_code_keeps_error_positions_and_reaches_partials():
+  assert_eq(_fail("```\n{{ a }}\n```\n{{ missing() }}", {}, {literal_code: true, source_name: "page.md"}), "page.md:4:1: Unknown function: missing")
+  | assert_eq(marl_render("{% include \"p\" %}", {}, {literal_code: true, partials: {p: "`{{ z }}` ok"}}), "`{{ z }}` ok")
+  | assert_eq(marl_render("{% extends \"b\" %}{% block m %}`{{ z }}`{% endblock %}", {}, {literal_code: true, partials: {b: "[{% block m %}{% endblock %}`{{ q }}`]"}}), "[`{{ z }}``{{ q }}`]")
+  | assert_eq(_fail("`{{ z }}`", {}, {source_name: "page.md"}), "page.md:1:2: Undefined variable 'z'")
+end
+
+def test_pages_treat_code_literally_by_default():
+  let text = "---\ntitle: T\n---\n```yaml\ntoken: ${{ secrets.T }}\n```\n`{{ page[:title] }}` {{ page[:title] }}"
+  | let partials = {layout: "<{{ content }}>"}
+  | assert_eq(marl_render_page(text, {}, {partials: partials}), "<```yaml\ntoken: ${{ secrets.T }}\n```\n`{{ page[:title] }}` T>")
+  | assert_eq(marl_render_page("`{{ page[:title] }}`", {}, {literal_code: false, partials: partials, lenient: true}), "<``>")
+  | assert_eq(marl_render_pages({"a.md": "```\n{{ nope }}\n```"}, {}), {"a.md": "```\n{{ nope }}\n```"})
+end
+
+def test_try_render_pages_collects_errors():
+  let pages = {"ok.md": "---\ntitle: A\n---\nfine {{ page[:title] }}", "bad.md": "x\n{{ missing() }}", "undefined.md": "{{ nope }}"}
+  | let result = marl_try_render_pages(pages, {})
+  | assert_eq(result[:outputs], {"ok.md": "fine A"})
+  | assert_eq(result[:errors], {"bad.md": "bad.md:2:1: Unknown function: missing", "undefined.md": "undefined.md:1:1: Undefined variable 'nope'"})
+  | assert_eq(marl_try_render_pages({"a.md": "x"}, {}), {outputs: {"a.md": "x"}, errors: {}})
+  | assert_eq(marl_try_render_pages({}, {}), {outputs: {}, errors: {}})
+  | assert_eq(_fail("{{ bad() }}", {}, {}), "<template>:1:1: Unknown function: bad")
+  | let strict = try: marl_render_pages(pages, {}) catch(e): e[:message]
+  | assert_eq(starts_with(strict, "bad.md:2:1: ") || starts_with(strict, "undefined.md:1:1: "), true)
 end
