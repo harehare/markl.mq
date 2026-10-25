@@ -49,9 +49,10 @@ mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
 | [Filters and helpers](docs/filters.md) | Markdown formatting, `table`, `bullets`, `toc`, `date`, and more |
 | [Layouts, components, and themes](docs/layouts-and-themes.md) | `include ... with`, `component`, `extends`, `theme` |
 | [Articles and site builds](docs/articles.md) | Front matter, `marl_build`, Mermaid, HTML output |
+| [Build a multi-page HTML site](docs/site.md) | A blog-style site step by step: pages, theme, index, build script, two languages |
 | [API](docs/api.md) | Functions, options, file helpers, `marl_build_site` |
 
-See [`examples/`](examples) for an article rendered with three themes (`default`, `zenn`, `devto`), and [`blog/`](blog) for a complete bilingual blog about mq built with markl.mq.
+See [`examples/`](examples) for an article rendered with three themes (`default`, `zenn`, `devto`).
 
 ## Compatibility
 

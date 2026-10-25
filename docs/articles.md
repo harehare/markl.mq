@@ -36,7 +36,7 @@ mq -I null -R -W -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_build_site("examples/content", "examples/themes", "public", {}, {theme: "default", html: true})'
 ```
 
-See [API](api.md#read-and-write-files) for the permissions it needs, and [`blog/`](../blog) for a complete example.
+See [API](api.md#read-and-write-files) for the permissions it needs, and [Build a multi-page HTML site](site.md) for a complete walk-through.
 
 ## Mermaid diagrams
 
