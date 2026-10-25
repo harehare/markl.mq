@@ -1,6 +1,7 @@
 # A small Markdown template engine with mqmq expressions.
 
 import "mqmq"
+import "mermaid"
 |
 
 def _marl_slice(chars, from, to):
@@ -971,13 +972,22 @@ def marl_parse_page(text):
     end
 end
 
+# Replaces ```mermaid blocks of the finished page with inline SVG (`svg` or
+# `true`) or a text drawing (`text`). Blocks mermaid.mq cannot draw stay as they are.
+def _marl_mermaid(markdown, mode, theme):
+  if (mode == false || is_none(mode)): markdown
+  elif (mode == :text || mode == "text"): mermaid::mermaid_render_markdown_with(markdown, {"format": "text"})
+  else: mermaid::mermaid_render_markdown_with(markdown, {"theme": theme})
+end
+
 # Renders a parsed page. The `theme` option beats the page's own `theme`, and
 # the `layout` option beats its `layout`. `layout: false` skips the layout; with
 # no layout set, a partial named `layout` is used when one exists.
 def _marl_render_page(page, data, options):
   let meta = page[:meta]
   | let theme = _marl_option(options, :theme, meta[:theme])
-  | let opts = dict(entries(options) + [[:theme, theme], [:literal_code, _marl_option(options, :literal_code, true)]])
+  | let html_env = [[:env, dict([["html", _marl_option(options, :html, false) != false]] + entries(_marl_option(options, :env, {})))]]
+  | let opts = dict(entries(options) + [[:theme, theme], [:literal_code, _marl_option(options, :literal_code, true)]] + html_env)
   | let scope = dict((if (is_dict(data)): entries(data) else: []) + [["page", meta]])
   | let body = marl_render(page[:body], scope, opts)
   | let layout = _marl_option(opts, :layout, meta[:layout])
@@ -986,8 +996,43 @@ def _marl_render_page(page, data, options):
   | let found = if (layout == false): None else: _marl_find(lookup, if (is_none(layout)): "layout" else: layout)
   | if (is_none(found) && !is_none(layout) && layout != false):
       error(_marl_option(opts, :source_name, "<template>") + ": Unknown layout '" + to_string(layout) + "'")
-  | if (is_none(found)): body
+  | let out = if (is_none(found)): body
     else: marl_render_ast(marl_compile(found[:source], {source_name: found[:key], literal_code: opts[:literal_code]}),
+      dict(entries(scope) + [["content", body]]), opts)
+  | let mode = _marl_option(opts, :mermaid, false)
+  | let mtheme = _marl_option(opts, :mermaid_theme, "light")
+  | if (_marl_option(opts, :html, false) == false): _marl_mermaid(out, mode, mtheme)
+    else: _marl_html(out, scope, opts, lookup, mode, mtheme)
+end
+
+def _marl_unescape_html(text):
+  replace(replace(replace(replace(replace(text, "&lt;", "<"), "&gt;", ">"), "&quot;", "\""), "&#39;", "'"), "&amp;", "&")
+end
+
+# Swaps the `language-mermaid` code blocks of converted HTML for inline SVG.
+# A block mermaid.mq cannot draw stays a code block. Done after the Markdown
+# to HTML conversion, which would escape the SVG's <style> element.
+def _marl_html_mermaid(html, theme):
+  let open = "<pre><code class=\"language-mermaid\">"
+  | let close = "</code></pre>"
+  | let parts = split(html, open)
+  | fold(parts[1:len(parts)], parts[0], fn(acc, part):
+      let pieces = split(part, close)
+      | let source = pieces[0]
+      | let tail = join(pieces[1:len(pieces)], close)
+      | let svg = try: mermaid::mermaid_to_svg_with(_marl_unescape_html(source), {"theme": theme}) catch: None
+      | acc + (if (is_none(svg)): open + part else: svg + tail)
+    ;)
+end
+
+# Wraps the page's HTML in the theme's `html` partial (a full document with the
+# theme's CSS). `content` is the HTML body; without such a partial it is returned bare.
+def _marl_html(markdown, scope, opts, lookup, mode, mtheme):
+  let html = to_html(markdown)
+  | let body = if (mode == false || is_none(mode) || mode == :text || mode == "text"): html else: _marl_html_mermaid(html, mtheme)
+  | let found = _marl_find(lookup, "html")
+  | if (is_none(found)): body
+    else: marl_render_ast(marl_compile(found[:source], {source_name: found[:key], literal_code: false}),
       dict(entries(scope) + [["content", body]]), opts)
 end
 

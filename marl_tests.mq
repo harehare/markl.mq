@@ -459,3 +459,32 @@ def test_try_render_pages_collects_errors():
   | let strict = try: marl_render_pages(pages, {}) catch(e): e[:message]
   | assert_eq(starts_with(strict, "bad.md:2:1: ") || starts_with(strict, "undefined.md:1:1: "), true)
 end
+
+def test_mermaid_option_renders_blocks():
+  let page = "# T\n\n```mermaid\ngraph LR\n  A --> B\n```\n"
+  | assert_eq(marl_render_page(page, {}), page)
+  | assert_eq(contains(marl_render_page(page, {}, {mermaid: true}), "<svg"), true)
+  | assert_eq(contains(marl_render_page(page, {}, {mermaid: true}), "```mermaid"), false)
+  | assert_eq(contains(marl_render_page(page, {}, {mermaid: "text"}), "```text"), true)
+  | assert_eq(marl_render_page("```mermaid\nnot a diagram\n```", {}, {mermaid: true}), "```mermaid\nnot a diagram\n```")
+end
+
+def test_html_option_wraps_page_in_theme_shell():
+  let partials = {"alt/html.md": "<html><title>{{ page[:title] }}</title>{{ content }}</html>"}
+  | let page = "---\ntitle: T\n---\n# Hi\n\n```mermaid\ngraph LR\n  A --> B\n```\n"
+  | assert_eq(marl_render_page("# Hi", {}, {html: true}), "<h1>Hi</h1>")
+  | assert_eq(marl_render_page("# Hi", {}, {html: true, partials: partials, theme: "alt"}), "<html><title></title><h1>Hi</h1></html>")
+  | let out = marl_render_page(page, {}, {html: true, mermaid: true, partials: partials, theme: "alt"})
+  | assert_eq(starts_with(out, "<html><title>T</title><h1>Hi</h1>\n<svg"), true)
+  | assert_eq(contains(out, "<style>"), true)
+  | assert_eq(contains(out, "&lt;style>"), false)
+  | assert_eq(contains(marl_render_page(page, {}, {html: true, mermaid: true, mermaid_theme: "dark"}), "mm-dark"), true)
+  | assert_eq(contains(marl_render_page("```mermaid\nnope\n```", {}, {html: true, mermaid: true}), "language-mermaid"), true)
+end
+
+def test_html_env_flag_reaches_templates():
+  let partials = {"c.md": "{% if html %}H{% else %}M{% endif %}"}
+  | assert_eq(marl_render_page("{% include \"c\" %}", {}, {partials: partials}), "M")
+  | assert_eq(marl_render_page("{% include \"c\" %}", {}, {partials: partials, html: true}), "<p>H</p>")
+  | assert_eq(marl_render_page("{% include \"c\" %}", {}, {partials: partials, html: true, env: {html: false}}), "<p>M</p>")
+end
