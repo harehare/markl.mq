@@ -28,7 +28,7 @@ markl.mq renders text with `{{ expression }}` tags evaluated by [mqmq](https://g
 
 ## Installation
 
-Markl imports [mqmq](https://github.com/harehare/mqmq) as an external module, vendored as a git submodule in `vendor/mqmq`. Clone with submodules:
+Markl imports [mqmq](https://github.com/harehare/mqmq) and [mermaid.mq](https://github.com/harehare/mermaid.mq) as external modules, vendored as git submodules in `vendor/mqmq` and `vendor/mermaid.mq`. Clone with submodules:
 
 ```sh
 git clone --recurse-submodules <repository-url>
@@ -36,14 +36,14 @@ git clone --recurse-submodules <repository-url>
 git submodule update --init
 ```
 
-Run the commands below from the `markl.mq` directory. The `-L vendor/mqmq` option lets `import "mqmq"` resolve mqmq and its own modules.
+Run the commands below from the `markl.mq` directory. The `-L vendor/mqmq -L vendor/mermaid.mq` options let `import "mqmq"` and `import "mermaid"` resolve.
 
 ## Usage
 
 Include `marl.mq`, then pass a template string and a data value to `marl_render`:
 
 ```sh
-mq -I null -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_render("# {{ title }}\n{% for item in items %}- {{ item }}\n{% endfor %}", {title: "Notes", items: ["one", "two"]})'
 ```
 
@@ -73,7 +73,7 @@ and `data.json`:
 load the template as a raw string and pass each JSON input value as data:
 
 ```sh
-mq -L . -L vendor/mqmq --rawfile template page.md \
+mq -L . -L vendor/mqmq -L vendor/mermaid.mq --rawfile template page.md \
   'include "marl" | marl_render(template, .)' data.json
 ```
 
@@ -82,7 +82,7 @@ mq -L . -L vendor/mqmq --rawfile template page.md \
 `marl(template)` renders against the current pipeline value (`self`):
 
 ```sh
-mq -I null -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | {name: "Ada"} | marl("Hello, {{ name }}!")'
 # => Hello, Ada!
 ```
@@ -92,7 +92,7 @@ mq -I null -L . -L vendor/mqmq \
 Bundle `marl.mq` and mqmq into one `markl.mqc` program that runs without `-L`:
 
 ```sh
-mq compile -I json -L . -L vendor/mqmq -o markl.mqc \
+mq compile -I json -L . -L vendor/mqmq -L vendor/mermaid.mq -o markl.mqc \
   'include "marl" | marl_render(template, .)'
 
 mq --rawfile template page.md markl.mqc data.json
@@ -182,7 +182,7 @@ By default a name that is not in the data or environment is an error that points
 `{% include "name" %}` renders another template with the current data and bindings. Partials come from the `partials` option, a dict of name to template string (markl does not read files). Includes can nest up to 16 levels, and `set` bindings inside a partial do not leak out:
 
 ```sh
-mq -I null -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_render("{% include \"head\" %}body", {title: "T"}, {source_name: "page.md", partials: {head: "# {{ title }}\n"}})'
 ```
 
@@ -234,17 +234,39 @@ The `theme` option wins over the page's own `theme` front matter key, so one art
 One failing page normally stops the whole build with an error naming the file. To build everything that can be built and see all the errors at once, use the `try` variants:
 
 ```sh
-mq -I null -R -L . -L vendor/mqmq \
+mq -I null -R -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | let r = marl_try_build("content", "themes", {}, {theme: "zenn"}) | r[:errors]'
 ```
 
 ```sh
 # content/*.md hold articles, themes/<theme>/*.md hold layouts and components
-mq -I null -R -L . -L vendor/mqmq \
+mq -I null -R -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_build("examples/content", "examples/themes", {}, {theme: ["zenn", "default"]})'
 ```
 
 [`examples/`](examples) contains an article and three themes (`default` for GitHub-style Markdown, `zenn`, `devto`): the same `mq-intro.md` renders with GitHub alerts, Zenn `:::message` blocks, or dev.to front matter depending on the `theme` option. Writing the result to disk goes through `marl_write_all`, which needs existing directories (see above).
+
+### Mermaid diagrams
+
+With the `mermaid` option, `marl_render_page` replaces every ```` ```mermaid ```` block of the finished page using [mermaid.mq](https://github.com/harehare/mermaid.mq): `mermaid: true` (or `"svg"`) inlines an SVG, `mermaid: "text"` draws a text block. Blocks that cannot be drawn stay as they are. It is off by default, since Zenn and dev.to render Mermaid themselves.
+
+```sh
+mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
+  'include "marl" | marl_render_page("```mermaid\ngraph LR\n  A --> B\n```", {}, {mermaid: true})'
+```
+
+### HTML output and themes
+
+With `html: true`, `marl_render_page` converts the finished Markdown to HTML (`to_html`) and wraps it in the theme's `html` partial, a full document with the theme's CSS. The partial receives `content` (the HTML body), `page` and the page data. `examples/themes/{default,zenn,devto}/html.md` follow the same `theme` lookup as layouts, including fallbacks such as `theme: ["zenn", "default"]`, and support light and dark mode. Without an `html` partial the bare HTML is returned.
+
+`mermaid` blocks are drawn after the conversion, so the SVG is inlined as is. `mermaid_theme` (`"light"`, `"dark"` or `"auto"`, default `"light"`) sets the diagram theme; use `"auto"` to follow the page's `prefers-color-scheme`.
+
+```sh
+mq -I null -R -L . -L vendor/mqmq -L vendor/mermaid.mq \
+  'include "marl" | marl_build("examples/content", "examples/themes", {}, {theme: "default", html: true, mermaid: true, mermaid_theme: "auto"})'
+```
+
+Templates can read `html` (true with `html: true`), so a component can emit HTML instead of platform syntax: the `zenn` callout renders a `<div class="message">` for HTML output and `:::message` otherwise.
 
 ## API
 
@@ -279,7 +301,7 @@ Options is a dict; every key is optional:
 For repeated rendering, compile once:
 
 ```sh
-mq -I null -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | let ast = marl_compile("Hello, {{ name }}!") | [marl_render_ast(ast, {name: "Ada"}), marl_render_ast(ast, {name: "Lin"})]'
 # => ["Hello, Ada!", "Hello, Lin!"]
 ```
@@ -291,7 +313,7 @@ Pass the `source_name` option when compiling or rendering to identify the templa
 `marl_render_all` renders a dict of name to template string in one call. Every template is also available as a partial to the others (explicit `partials` win), and errors use the template's name, so a shared layout works like a static site generator:
 
 ```sh
-mq -I null -L . -L vendor/mqmq \
+mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_render_all({"index.md": "{% include \"head.md\" %}Home", "about.md": "{% include \"head.md\" %}About", "head.md": "# {{ site }}\n"}, {site: "Notes"})'
 # => {"index.md": "# Notes\nHome", "about.md": "# Notes\nAbout", "head.md": "# Notes\n"}
 ```
@@ -310,7 +332,7 @@ These helpers use mq's `read_file`, `walk_files`, and `write_file`, which are di
 | `marl_write_all(outputs, dir)` | Write a dict of name to output below `dir` and return the written paths. Directories must already exist |
 
 ```sh
-mq -I null -R -W -L . -L vendor/mqmq \
+mq -I null -R -W -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_render_dir("content", {site: "Notes"}) | marl_write_all(., "public")'
 ```
 
@@ -319,7 +341,7 @@ mq -I null -R -W -L . -L vendor/mqmq \
 Tests are run with `mq-test`. From the `markl.mq` directory, run:
 
 ```sh
-mq-test -L vendor/mqmq marl_tests.mq
+mq-test -L vendor/mqmq -L vendor/mermaid.mq marl_tests.mq
 ```
 
 `-L` requires a `mq-test` release that supports `--directory`.

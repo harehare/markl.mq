@@ -1,3 +1,6 @@
 [submodule "vendor/mqmq"]
 	path = vendor/mqmq
 	url = https://github.com/harehare/mqmq.git
+[submodule "vendor/mermaid.mq"]
+	path = vendor/mermaid.mq
+	url = https://github.com/harehare/mermaid.mq
