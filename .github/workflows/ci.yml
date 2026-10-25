@@ -21,4 +21,4 @@ jobs:
         with:
           bins: test
       - name: Run tests
-        run: mq-test -L vendor/mqmq marl_tests.mq
+        run: mq-test -L vendor/mqmq -L vendor/mermaid.mq marl_tests.mq
