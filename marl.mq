@@ -71,7 +71,7 @@ end
 # emitted as a single text token. `Position` is
 # `{source_name: String, line: Number, column: Number}` (1-based) of the
 # opening delimiter, and is what error messages report.
-def _marl_scan(template, source_name):
+def _marl_scan(template, source_name, literal = false):
   let chars = graphemes(template)
   | let n = len(chars)
   | var cur = 0
@@ -83,6 +83,7 @@ def _marl_scan(template, source_name):
   | while (cur < n):
       let start = cur
       | let at = {source_name: source_name, line: line, column: column}
+      | let code_end = if (literal && !_marl_marker(chars, cur, n)): _marl_code_end(chars, cur, n) else: None
       | if (_marl_marker(chars, cur, n)) do
           let opener = chars[cur + 1]
           | let close_pos = _marl_close(chars, cur + 2, n, opener)
@@ -131,8 +132,9 @@ def _marl_scan(template, source_name):
             end
         end
       else do
-        var end_pos = cur + 1
-        | while (end_pos < n && !_marl_marker(chars, end_pos, n)):
+        var end_pos = if (is_none(code_end)): cur + 1 else: code_end
+        | while (is_none(code_end) && end_pos < n && !_marl_marker(chars, end_pos, n) &&
+              !(literal && (chars[end_pos] == "`" || chars[end_pos] == "~"))):
             end_pos += 1
           end
         | let text = if (trim_next): ltrim(_marl_slice(chars, cur, end_pos)) else: _marl_slice(chars, cur, end_pos)
@@ -148,6 +150,103 @@ def _marl_scan(template, source_name):
       | column = next[:column]
     end
   | _marl_stages(reversed, count)
+end
+
+def _marl_newline(ch):
+  ch == "\n" || ch == "\r\n" || ch == "\r"
+end
+
+# Is `pos` the first non-blank character of its line?
+def _marl_line_start(chars, pos):
+  var p = pos - 1
+  | while (p >= 0 && (chars[p] == " " || chars[p] == "\t")):
+      p -= 1
+    end
+  | p < 0 || _marl_newline(chars[p])
+end
+
+# The end of the run of `ch` that starts at `pos`.
+def _marl_run_end(chars, pos, n, ch):
+  var i = pos
+  | while (i < n && chars[i] == ch):
+      i += 1
+    end
+  | i
+end
+
+# The position after the line that ends at or after `pos`.
+def _marl_next_line(chars, pos, n):
+  var i = pos
+  | while (i < n && !_marl_newline(chars[i])):
+      i += 1
+    end
+  | if (i < n): i + 1 else: n
+end
+
+# The end of a fenced code block whose opening fence ends at `from`: just
+# after the closing fence (a line of the same character, at least as long as
+# the opening one), or the end of the template when it is never closed.
+def _marl_fence_end(chars, from, n, ch, width):
+  var line_start = _marl_next_line(chars, from, n)
+  | var found = None
+  | while (is_none(found) && line_start < n):
+      var i = line_start
+      | while (i < n && (chars[i] == " " || chars[i] == "\t")):
+          i += 1
+        end
+      | let run_end = _marl_run_end(chars, i, n, ch)
+      | var rest = run_end
+      | while (rest < n && (chars[rest] == " " || chars[rest] == "\t")):
+          rest += 1
+        end
+      | if (run_end - i >= width && (rest >= n || _marl_newline(chars[rest]))): found = run_end
+        else: line_start = _marl_next_line(chars, line_start, n)
+    end
+  | if (is_none(found)): n else: found
+end
+
+# The end of an inline code span that opens with `width` backticks at `from`:
+# just after the next run of exactly that many, or None when the paragraph
+# ends first.
+def _marl_span_end(chars, from, n, width):
+  var i = from
+  | var found = None
+  | var stop = false
+  | while (is_none(found) && !stop && i < n):
+      let ch = chars[i]
+      | if (ch == "`") do
+          let run_end = _marl_run_end(chars, i, n, "`")
+          | if (run_end - i == width): found = run_end
+          | i = run_end
+        end
+        elif (_marl_newline(ch)) do
+          var j = i + 1
+          | while (j < n && (chars[j] == " " || chars[j] == "\t")):
+              j += 1
+            end
+          | if (j >= n || _marl_newline(chars[j])): stop = true
+          | i += 1
+        end
+        else: i += 1
+    end
+  | found
+end
+
+# If a fenced code block or an inline code span starts at `pos`, the position
+# where it ends; otherwise None. Used by the `literal_code` option.
+def _marl_code_end(chars, pos, n):
+  let ch = chars[pos]
+  | if (ch != "`" && ch != "~"): None
+    else do
+      let run_end = _marl_run_end(chars, pos, n, ch)
+      | let width = run_end - pos
+      | let info_end = _marl_next_line(chars, run_end, n)
+      | let backtick_in_info = ch == "`" && any(chars[run_end:info_end], fn(c): c == "`" end)
+      | if (width >= 3 && _marl_line_start(chars, pos) && !backtick_in_info):
+          _marl_fence_end(chars, run_end, n, ch, width)
+        elif (ch == "`"): _marl_span_end(chars, run_end, n, width)
+        else: None
+    end
 end
 
 def _marl_space(ch):
@@ -171,7 +270,8 @@ def _marl_parsed(compiled):
 end
 
 def _marl_name(name, at):
-  let ast = try: _marl_parsed(mqmq::mqmq_compile(name))
+  if (is_empty(name)): _marl_error("Expected a name", at)
+  | let ast = try: _marl_parsed(mqmq::mqmq_compile(name))
                catch(e): _marl_error(e[:message], at)
   | if (ast[:kind] != "ident"):
       _marl_error("Expected a variable name, got '" + name + "'", at)
@@ -193,6 +293,52 @@ def _marl_stages(reversed, count):
       | reversed = reversed[1]
       | stage
     end)
+end
+
+def _marl_closing(word):
+  word == "endif" || word == "endfor" || word == "else" || word == "elif" ||
+    word == "endcapture" || word == "endblock" || word == "endcomponent"
+end
+
+# Splits `expression with expression` at the first top-level `with` keyword;
+# quotes and brackets protect it. `with` is None when the keyword is absent.
+def _marl_split_with(source):
+  let chars = graphemes(source)
+  | let n = len(chars)
+  | var quote = None
+  | var escaped = false
+  | var depth = 0
+  | var found = None
+  | var i = 0
+  | while (i < n && is_none(found)):
+      let ch = chars[i]
+      | if (!is_none(quote)) do
+          if (escaped): escaped = false
+          elif (ch == "\\"): escaped = true
+          elif (ch == quote): quote = None
+        end
+        elif (ch == "\"" || ch == "'"):
+          quote = ch
+        elif (ch == "(" || ch == "[" || ch == "{"):
+          depth += 1
+        elif (ch == ")" || ch == "]" || ch == "}"):
+          depth -= 1
+        elif (depth == 0 && i > 0 && i + 4 < n && _marl_space(chars[i - 1]) &&
+            _marl_slice(chars, i, i + 4) == "with" && _marl_space(chars[i + 4])):
+          found = i
+      | i += 1
+    end
+  | if (is_none(found)): {expr: trim(source), with: None}
+    else: {expr: trim(_marl_slice(chars, 0, found)), with: trim(_marl_slice(chars, found + 4, n))}
+end
+
+def _marl_with(source, at):
+  if (is_none(source)): None else: _marl_expr(source, at)
+end
+
+def _marl_include(source, at):
+  let parts = _marl_split_with(source)
+  | {kind: "include", ast: _marl_expr(parts[:expr], at), with: _marl_with(parts[:with], at), at: at}
 end
 
 # Leave the closing block tag unconsumed for the caller.
@@ -217,7 +363,7 @@ def _marl_block(tokens, pos):
           let command = _marl_word(tok[:source])
           | let word = command[:word]
           | let rest = command[:rest]
-          | if (word == "endif" || word == "endfor" || word == "else" || word == "elif"):
+          | if (_marl_closing(word)):
               break
             elif (word == "if") do
               let parsed = _marl_if(tokens, cur, rest)
@@ -234,8 +380,27 @@ def _marl_block(tokens, pos):
               | cur += 1
             end
             elif (word == "include") do
-              node = {kind: "include", ast: _marl_expr(rest, tok[:at]), at: tok[:at]}
+              node = _marl_include(rest, tok[:at])
               | cur += 1
+            end
+            elif (word == "extends") do
+              node = {kind: "extends", ast: _marl_expr(rest, tok[:at]), at: tok[:at]}
+              | cur += 1
+            end
+            elif (word == "capture") do
+              let parsed = _marl_capture(tokens, cur, rest)
+              | node = parsed[:node]
+              | cur = parsed[:pos]
+            end
+            elif (word == "block") do
+              let parsed = _marl_named(tokens, cur, rest, "block", "endblock")
+              | node = parsed[:node]
+              | cur = parsed[:pos]
+            end
+            elif (word == "component") do
+              let parsed = _marl_component(tokens, cur, rest)
+              | node = parsed[:node]
+              | cur = parsed[:pos]
             end
             else: _marl_error("Unknown template tag '" + word + "'", tok[:at])
         end
@@ -250,7 +415,7 @@ def _marl_end_word(tokens, pos, opening):
   else do
     let command = _marl_word(tokens[pos][:source])
     | let word = command[:word]
-    | if ((word == "endif" || word == "endfor" || word == "else") && !is_empty(command[:rest])):
+    | if (_marl_closing(word) && word != "elif" && !is_empty(command[:rest])):
         _marl_error("Unexpected text after '" + word + "'", tokens[pos][:at])
       else: command
   end
@@ -313,6 +478,38 @@ def _marl_set(source, at):
   | {kind: "set", name: name, ast: _marl_expr(trim(_marl_slice(chars, 1, len(chars))), at), at: at}
 end
 
+# Parses the body of `{% name ... %}...{% endname %}` and returns the items and
+# the position after the closing tag.
+def _marl_body(tokens, pos, at, end_word):
+  let body = _marl_block(tokens, pos + 1)
+  | let closing = _marl_end_word(tokens, body[:pos], at)
+  | if (closing[:word] != end_word):
+      _marl_error("Expected " + end_word, tokens[body[:pos]][:at])
+  | {items: body[:items], pos: body[:pos] + 1}
+end
+
+def _marl_capture(tokens, pos, source):
+  let at = tokens[pos][:at]
+  | let name = _marl_name(source, at)
+  | let body = _marl_body(tokens, pos, at, "endcapture")
+  | {node: {kind: "capture", name: name, body: body[:items], at: at}, pos: body[:pos]}
+end
+
+def _marl_named(tokens, pos, source, kind, end_word):
+  let at = tokens[pos][:at]
+  | let name = _marl_name(source, at)
+  | let body = _marl_body(tokens, pos, at, end_word)
+  | {node: {kind: kind, name: name, body: body[:items], at: at}, pos: body[:pos]}
+end
+
+def _marl_component(tokens, pos, source):
+  let at = tokens[pos][:at]
+  | let inc = _marl_include(source, at)
+  | let body = _marl_body(tokens, pos, at, "endcomponent")
+  | {node: {kind: "component", ast: inc[:ast], with: inc[:with], body: body[:items], at: at},
+     pos: body[:pos]}
+end
+
 # Template helpers written in mq. They are compiled once per template and
 # bound as functions, so they work both directly and as pipeline filters.
 # The piped value is the last argument: `x | default(d)`, `text | link(url)`,
@@ -332,21 +529,57 @@ def _marl_helper_sources():
     "def numbered(v = .): let ind = fn(n, x): join(map(split(to_string(x), \"\\n\"), fn(l): if (l == \"\"): l else: (\" \" * n) + l end), \"\\n\") end | join(map(range(0, len(v) - 1), fn(i): let label = to_string(i + 1) + \". \" | label + ind(len(label), v[i])[len(label):] end), \"\\n\") end",
     "def escape_md(v = .): fold([\"\\\\\", \"`\", \"*\", \"_\", \"[\", \"]\", \"<\", \">\", \"|\", \"~\", \"#\"], to_string(v), fn(acc, c): replace(acc, c, \"\\\\\" + c) end) end",
     "def truncate(n, v = .): let s = to_string(v) | if (len(s) > n): s[0:(n)] + \"…\" else: s end end",
-    "def table(headers, rows = .): let cell = fn(c): replace(replace(to_string(if (is_none(c)): \"\" else: c), \"|\", \"\\\\|\"), \"\\n\", \" \") end | let line = fn(cells): \"| \" + join(map(cells, cell), \" | \") + \" |\" end | let pad = fn(r): map(range(0, len(headers) - 1), fn(i): if (i < len(r)): r[i] else: \"\") end | let body = map(rows, fn(r): line(if (is_dict(r)): map(headers, fn(h): r[h] end) else: pad(r)) end) | join([line(headers), line(map(headers, fn(h): \"---\" end))] + body, \"\\n\") end"
+    "def table(headers, rows = .): let cell = fn(c): replace(replace(to_string(if (is_none(c)): \"\" else: c), \"|\", \"\\\\|\"), \"\\n\", \" \") end | let line = fn(cells): \"| \" + join(map(cells, cell), \" | \") + \" |\" end | let pad = fn(r): map(range(0, len(headers) - 1), fn(i): if (i < len(r)): r[i] else: \"\") end | let body = map(rows, fn(r): line(if (is_dict(r)): map(headers, fn(h): r[h] end) else: pad(r)) end) | join([line(headers), line(map(headers, fn(h): \"---\" end))] + body, \"\\n\") end",
+    "def slugify(v = .): let keep = fn(ch): (ch >= \"a\" && ch <= \"z\") || (ch >= \"0\" && ch <= \"9\") || ch > \"~\" end | join(filter(split(join(map(graphemes(downcase(to_string(v))), fn(ch): if (keep(ch)): ch else: \"-\" end), \"\"), \"-\"), fn(part): part != \"\" end), \"-\") end",
+    "def anchor(v = .): join(map(filter(graphemes(downcase(trim(to_string(v)))), fn(ch): ch == \" \" || ch == \"-\" || ch == \"_\" || (ch >= \"a\" && ch <= \"z\") || (ch >= \"0\" && ch <= \"9\") || ch > \"~\" end), fn(ch): if (ch == \" \"): \"-\" else: ch end), \"\") end",
+    "def capitalize(v = .): let s = to_string(v) | if (s == \"\"): s else: upcase(s[0:1]) + s[1:(len(s))] end end",
+    "def date(fmt, v = .): let s = to_string(v) | to_date(from_date(if (len(s) == 10): s + \"T00:00:00Z\" else: s), fmt) end",
+    "def word_count(v = .): len(filter(split(replace(to_string(v), \"\\n\", \" \"), \" \"), fn(w): w != \"\" end)) end",
+    "def reading_time(v = .): let cjk = len(filter(graphemes(to_string(v)), fn(ch): ch >= \"ぁ\" && ch <= \"龥\" end)) | max(1, ceil(word_count(v) / 200 + cjk / 500)) end",
+    "def details(summary, v = .): \"<details>\\n<summary>\" + to_string(summary) + \"</summary>\\n\\n\" + to_string(v) + \"\\n\\n</details>\" end",
+    "def image(alt, v = .): \"![\" + to_string(alt) + \"](\" + to_string(v) + \")\" end",
+    "def toc(min_level, max_level, v = .): let entries = map(filter(to_markdown(to_string(v)), fn(n): is_h(n) end), fn(h): {level: len(split(to_string(h), \" \")[0]), text: to_text(h)} end) | join(map(filter(entries, fn(e): e[:level] >= min_level && e[:level] <= max_level end), fn(e): (\" \" * (2 * (e[:level] - min_level))) + \"- [\" + e[:text] + \"](#\" + anchor(e[:text]) + \")\" end), \"\\n\") end"
   ]
 end
 
+# A helper that calls another one gets just that helper in its environment
+# (`toc` uses `anchor`, `reading_time` uses `word_count`). Giving every helper
+# all the others made each environment copy during rendering about four times
+# slower.
 def _marl_helpers():
-  dict(map(_marl_helper_sources(), fn(source):
+  let base = dict(map(_marl_helper_sources(), fn(source):
     let ast = _marl_parsed(mqmq::mqmq_compile(source))
     | [ast[:name], {kind: "fn", name: ast[:name], params: ast[:params], body: ast[:body], env: {}}]
   end))
+  | let deps = {toc: ["anchor"], reading_time: ["word_count"]}
+  | dict(map(entries(base), fn(entry):
+      let needs = deps[entry[0]]
+      | [entry[0], set(entry[1], "env",
+          dict(map(if (is_none(needs)): [] else: needs, fn(name): [name, base[name]] end)))]
+    end))
 end
 
 # Options are a dict of atom keys; a missing key takes its default.
 def _marl_option(options, key, default):
   let value = options[key]
   | if (is_none(value)): default else: value
+end
+
+# The names that expressions call or refer to, as a dict of name to true.
+def _marl_used_names(node, found):
+  if (is_array(node)): fold(node, found, fn(acc, item): _marl_used_names(item, acc) end)
+  elif (is_dict(node)) do
+    let acc = if ((node[:kind] == "call" || node[:kind] == "ident") && is_string(node[:name])):
+        set(found, node[:name], true)
+      else: found
+    | fold(values(node), acc, fn(inner, child): _marl_used_names(child, inner) end)
+  end
+  else: found
+end
+
+def _marl_used_helpers(items):
+  let used = _marl_used_names(items, {})
+  | dict(filter(entries(_MARL_HELPERS), fn(entry): used[entry[0]] == true end))
 end
 
 # Compiles a template into an AST that marl_render_ast can render many times.
@@ -368,15 +601,17 @@ end
 # _marl_scan). `elif` has no node of its own: it is an `if` stored as the only
 # item of the parent's `else_part`. An `if` without `else` has `else_part: []`.
 # `include` keeps the partial name as an expression, and the partial itself is
-# compiled when it is included. `helpers` maps each helper name to an mqmq `fn`
-# node and is shared by every compiled template.
+# compiled when it is included. `helpers` maps the name of each helper the
+# template calls or refers to onto an mqmq `fn` node. Rendering copies the
+# environment for every loop iteration, so it carries only the helpers in use.
 def marl_compile(template, options = {}):
-  let tokens = _marl_scan(template, _marl_option(options, :source_name, "<template>"))
+  let tokens = _marl_scan(template, _marl_option(options, :source_name, "<template>"),
+    _marl_option(options, :literal_code, false))
   | let parsed = _marl_block(tokens, 0)
   | if (parsed[:pos] != len(tokens)):
       _marl_error("Unexpected closing tag '" + _marl_word(tokens[parsed[:pos]][:source])[:word] + "'",
         tokens[parsed[:pos]][:at])
-    else: {kind: "template", items: parsed[:items], helpers: _MARL_HELPERS}
+    else: {kind: "template", items: parsed[:items], helpers: _marl_used_helpers(parsed[:items])}
 end
 
 def _marl_output(value):
@@ -409,6 +644,84 @@ def _marl_value(ast, value, env, at):
   catch(e): _marl_recover(e[:message], ast, value, env, at)
 end
 
+# Template names resolve against the `partials` option. With themes, a name is
+# looked up in each theme first (`theme/name`), then as written, and each
+# candidate is also tried with the `ext` option appended.
+def _marl_names(key, ext):
+  if (is_empty(ext) || ends_with(key, ext)): [key] else: [key, key + ext]
+end
+
+def _marl_find(env, name):
+  let partials = env["__partials__"]
+  | let key = to_string(name)
+  | let prefixes = map(env["__themes__"], fn(theme): theme + "/" end) + [""]
+  | let hits = filter(flatten(map(prefixes, fn(prefix): _marl_names(prefix + key, env["__ext__"]) end)),
+      fn(candidate): is_dict(partials) && !is_none(partials[candidate]) end)
+  | if (is_empty(hits)): None else: {key: hits[0], source: partials[hits[0]]}
+end
+
+def _marl_partial(env, name, at):
+  let found = _marl_find(env, name)
+  | if (is_none(found)): _marl_error("Unknown partial '" + to_string(name) + "'", at)
+    elif (env["__depth__"] >= 16):
+      _marl_error("Include nesting is too deep at '" + to_string(name) + "'", at)
+    else: found
+end
+
+def _marl_params(value, at):
+  if (is_none(value)): {}
+  elif (is_dict(value)): value
+  else: _marl_error("With expects a dict", at)
+end
+
+# `include` renders a partial; `component` also passes its rendered body to the
+# partial as `body`. Both accept `with {...}` to add bindings for the partial.
+def _marl_include_text(node, value, env):
+  let name = _marl_value(node[:ast], value, env, node[:at])
+  | let found = _marl_partial(env, name, node[:at])
+  | let params = if (is_none(node[:with])): {}
+      else: _marl_params(_marl_value(node[:with], value, env, node[:at]), node[:at])
+  | let body = if (node[:kind] == "component"):
+      [["body", _marl_render_nodes(node[:body], value, env)[:text]]]
+    else: []
+  | let ast = marl_compile(found[:source], {source_name: found[:key], literal_code: env["__literal__"]})
+  | _marl_render_template(ast, value,
+      dict(entries(env) + entries(params) + body + [["__depth__", env["__depth__"] + 1]]))
+end
+
+def _marl_collect_blocks(items):
+  flatten(map(items, fn(node):
+    let kind = node[:kind]
+    | if (kind == "block"): [node] + _marl_collect_blocks(node[:body])
+      elif (kind == "if"): _marl_collect_blocks(node[:then_part]) + _marl_collect_blocks(node[:else_part])
+      elif (kind == "for"): _marl_collect_blocks(node[:body]) + _marl_collect_blocks(node[:else_part])
+      elif (kind == "capture" || kind == "component"): _marl_collect_blocks(node[:body])
+      else: []
+  end))
+end
+
+# A template with `{% extends %}` renders its parent with its own `block`s
+# overriding the parent's. Only top-level `set` tags of the child run (they
+# bind values for the parent); other text outside blocks is ignored. Blocks of
+# the most derived template win in a chain of extends.
+def _marl_render_template(ast, value, base_env):
+  let items = ast[:items]
+  | let missing = filter(entries(ast[:helpers]), fn(entry): !has(base_env, entry[0]) end)
+  | let env = if (is_empty(missing)): base_env else: dict(entries(base_env) + missing)
+  | let parents = filter(items, fn(node): node[:kind] == "extends" end)
+  | if (is_empty(parents)): _marl_render_nodes(items, value, env)[:text]
+    else do
+      let node = parents[0]
+      | let name = _marl_value(node[:ast], value, env, node[:at])
+      | let found = _marl_partial(env, name, node[:at])
+      | let blocks = dict(map(_marl_collect_blocks(items), fn(block): [block[:name], block] end) +
+          entries(env["__blocks__"]))
+      | let bound = _marl_render_nodes(filter(items, fn(node): node[:kind] == "set" end), value, env)[:env]
+      | _marl_render_template(marl_compile(found[:source], {source_name: found[:key], literal_code: env["__literal__"]}), value,
+          dict(entries(bound) + [["__blocks__", blocks], ["__depth__", env["__depth__"] + 1]]))
+    end
+end
+
 def _marl_render_nodes(items, value, env):
   var current_env = env
   | let parts = foreach (node, items):
@@ -421,15 +734,19 @@ def _marl_render_nodes(items, value, env):
           | current_env = set(current_env, node[:name], result)
           | ""
         end
-        elif (kind == "include") do
-          let name = _marl_value(node[:ast], value, current_env, node[:at])
-          | let partials = current_env["__partials__"]
-          | let depth = current_env["__depth__"]
-          | if (!is_dict(partials) || is_none(partials[name])): _marl_error("Unknown partial '" + to_string(name) + "'", node[:at])
-          | if (depth >= 16): _marl_error("Include nesting is too deep at '" + to_string(name) + "'", node[:at])
-          | let ast = marl_compile(partials[name], {source_name: to_string(name)})
-          | _marl_render_nodes(ast[:items], value, set(current_env, "__depth__", depth + 1))[:text]
+        elif (kind == "include" || kind == "component"):
+          _marl_include_text(node, value, current_env)
+        elif (kind == "capture") do
+          let text = _marl_render_nodes(node[:body], value, current_env)[:text]
+          | current_env = set(current_env, node[:name], text)
+          | ""
         end
+        elif (kind == "block") do
+          let override = current_env["__blocks__"][node[:name]]
+          | _marl_render_nodes(if (is_none(override)): node[:body] else: override[:body],
+              value, current_env)[:text]
+        end
+        elif (kind == "extends"): ""
         elif (kind == "if") do
           let condition = _marl_value(node[:cond], value, current_env, node[:at])
           | let branch = if (condition): node[:then_part] else: node[:else_part]
@@ -461,14 +778,24 @@ def _marl_render_nodes(items, value, env):
   | {text: join(parts, ""), env: current_env}
 end
 
+def _marl_themes(options):
+  let theme = options[:theme]
+  | if (is_none(theme)): [] elif (is_array(theme)): theme else: [theme]
+end
+
 # Data dictionary keys are available as bare names. Explicit env bindings
-# override data keys. A loop changes '.' to its current item.
+# override data keys. A loop changes '.' to its current item. `theme` is bound
+# to the first theme of the `theme` option, or None.
 def marl_render_ast(ast, data, options = {}):
   let data_env = if (is_dict(data)): entries(data) else: []
-  | let initial = dict(entries(ast[:helpers]) + data_env + entries(_marl_option(options, :env, {})) +
+  | let themes = _marl_themes(options)
+  | let initial = dict(entries(ast[:helpers]) + [["theme", if (is_empty(themes)): None else: themes[0]]] +
+      data_env + entries(_marl_option(options, :env, {})) +
       [["__nodes__", data], ["__partials__", _marl_option(options, :partials, {})], ["__depth__", 0],
-       ["__lenient__", _marl_option(options, :lenient, false)]])
-  | _marl_render_nodes(ast[:items], data, initial)[:text]
+       ["__lenient__", _marl_option(options, :lenient, false)], ["__themes__", themes],
+       ["__ext__", _marl_option(options, :ext, ".md")], ["__blocks__", {}],
+       ["__literal__", _marl_option(options, :literal_code, false)]])
+  | _marl_render_template(ast, data, initial)
 end
 
 def marl_render(template, data, options = {}):
@@ -504,6 +831,205 @@ def marl_render_each(template, items, options = {}):
   | foreach (item, items): marl_render_ast(ast, item, options) end
 end
 
+# --- Pages -------------------------------------------------------------------
+#
+# A page is a Markdown file with optional YAML front matter. Its body is
+# rendered as a template, then wrapped in a layout partial (looked up through
+# the themes) that receives the result as `content`.
+
+def _marl_quoted(s):
+  len(s) >= 2 && ((starts_with(s, "\"") && ends_with(s, "\"")) || (starts_with(s, "'") && ends_with(s, "'")))
+end
+
+def _marl_unquote(s):
+  let chars = graphemes(s)
+  | let inner = _marl_slice(chars, 1, len(chars) - 1)
+  | if (starts_with(s, "\"")): replace(replace(replace(inner, "\\n", "\n"), "\\\"", "\""), "\\\\", "\\")
+    else: replace(inner, "''", "'")
+end
+
+# Splits on commas outside quotes.
+def _marl_split_commas(source):
+  let chars = graphemes(source)
+  | let n = len(chars)
+  | var quote = None
+  | var start = 0
+  | var parts = []
+  | var i = 0
+  | while (i < n):
+      let ch = chars[i]
+      | if (!is_none(quote)) do
+          if (ch == quote): quote = None
+        end
+        elif (ch == "\"" || ch == "'"):
+          quote = ch
+        elif (ch == ",") do
+          parts = parts + [_marl_slice(chars, start, i)]
+          | start = i + 1
+        end
+      | i += 1
+    end
+  | parts + [_marl_slice(chars, start, n)]
+end
+
+def _marl_scalar(raw):
+  let s = trim(raw)
+  | if (is_empty(s) || s == "~" || s == "null"): None
+    elif (s == "true"): true
+    elif (s == "false"): false
+    elif (_marl_quoted(s)): _marl_unquote(s)
+    elif (s =~ "^-?[0-9]+(\\.[0-9]+)?$"): to_number(s)
+    elif (starts_with(s, "[") && ends_with(s, "]")) do
+      let inner = trim(_marl_slice(graphemes(s), 1, len(graphemes(s)) - 1))
+      | if (is_empty(inner)): [] else: map(_marl_split_commas(inner), fn(item): _marl_scalar(item) end)
+    end
+    else: s
+end
+
+def _marl_indent(line):
+  len(line) - len(ltrim(line))
+end
+
+def _marl_dedent(lines):
+  let filled = filter(lines, fn(line): trim(line) != "" end)
+  | if (is_empty(filled)): map(lines, fn(line): "" end)
+    else do
+      let width = _marl_indent(filled[0])
+      | map(lines, fn(line): if (len(line) <= width): "" else: _marl_slice(graphemes(line), width, len(graphemes(line))) end)
+    end
+end
+
+# Lines indented below a key, up to the next top-level line.
+def _marl_nested(lines, from):
+  var j = from
+  | while (j < len(lines) && (trim(lines[j]) == "" || _marl_indent(lines[j]) > 0)):
+      j += 1
+    end
+  | j
+end
+
+# Parses the YAML subset used by front matter: `key: scalar`, inline arrays,
+# block lists of scalars, nested mappings, and `|` / `>` block scalars.
+def _marl_parse_yaml(lines):
+  let n = len(lines)
+  | var meta = {}
+  | var i = 0
+  | while (i < n):
+      let line = lines[i]
+      | let text = trim(line)
+      | let parts = split(line, ":")
+      | if (text == "" || starts_with(text, "#") || _marl_indent(line) > 0 || len(parts) < 2) do
+          i += 1
+        end
+        else do
+          let key = trim(parts[0])
+          | let rest = trim(join(parts[1:len(parts)], ":"))
+          | let stop = _marl_nested(lines, i + 1)
+          | let nested = _marl_dedent(lines[i + 1:stop])
+          | let items = filter(nested, fn(item): trim(item) != "" end)
+          | let value = if (rest == "|" || rest == "|-" || rest == "|+") do
+                rtrim(join(nested, "\n"))
+              end
+              elif (rest == ">" || rest == ">-" || rest == ">+"):
+                rtrim(join(map(filter(nested, fn(item): trim(item) != "" end), fn(item): trim(item) end), " "))
+              elif (rest != ""):
+                _marl_scalar(rest)
+              elif (is_empty(items)):
+                None
+              elif (starts_with(trim(items[0]), "-")):
+                map(filter(items, fn(item): starts_with(trim(item), "-") end),
+                  fn(item): _marl_scalar(_marl_slice(graphemes(trim(item)), 1, len(graphemes(trim(item))))) end)
+              else:
+                _marl_parse_yaml(nested)
+          | meta = set(meta, key, value)
+          | i = stop
+        end
+    end
+  | meta
+end
+
+# Splits a document into `{meta: Dict, body: String}`. Front matter is a
+# leading `---` ... `---` block; without one `meta` is empty and `body` is the
+# whole text. Leading blank lines of the body are dropped.
+def marl_parse_page(text):
+  let lines = split(replace(text, "\r\n", "\n"), "\n")
+  | let n = len(lines)
+  | var close = None
+  | var k = 1
+  | if (n > 1 && trim(lines[0]) == "---"):
+      while (k < n && is_none(close)) do
+        if (trim(lines[k]) == "---"): close = k
+        | k += 1
+      end
+  | if (is_none(close)): {meta: {}, body: text}
+    else do
+      var start = close + 1
+      | while (start < n && trim(lines[start]) == ""):
+          start += 1
+        end
+      | {meta: _marl_parse_yaml(lines[1:close]), body: join(lines[start:n], "\n")}
+    end
+end
+
+# Renders a parsed page. The `theme` option beats the page's own `theme`, and
+# the `layout` option beats its `layout`. `layout: false` skips the layout; with
+# no layout set, a partial named `layout` is used when one exists.
+def _marl_render_page(page, data, options):
+  let meta = page[:meta]
+  | let theme = _marl_option(options, :theme, meta[:theme])
+  | let opts = dict(entries(options) + [[:theme, theme], [:literal_code, _marl_option(options, :literal_code, true)]])
+  | let scope = dict((if (is_dict(data)): entries(data) else: []) + [["page", meta]])
+  | let body = marl_render(page[:body], scope, opts)
+  | let layout = _marl_option(opts, :layout, meta[:layout])
+  | let lookup = dict([["__partials__", _marl_option(opts, :partials, {})], ["__themes__", _marl_themes(opts)],
+      ["__ext__", _marl_option(opts, :ext, ".md")]])
+  | let found = if (layout == false): None else: _marl_find(lookup, if (is_none(layout)): "layout" else: layout)
+  | if (is_none(found) && !is_none(layout) && layout != false):
+      error(_marl_option(opts, :source_name, "<template>") + ": Unknown layout '" + to_string(layout) + "'")
+  | if (is_none(found)): body
+    else: marl_render_ast(marl_compile(found[:source], {source_name: found[:key], literal_code: opts[:literal_code]}),
+      dict(entries(scope) + [["content", body]]), opts)
+end
+
+def marl_render_page(text, data, options = {}):
+  _marl_render_page(marl_parse_page(text), data, options)
+end
+
+# Renders a dict of name to page text. Every template can read `pages`, the
+# front matter of all pages (newest `date` first) with `name` and `slug`
+# added, so layouts and pages can build indexes and related-article lists.
+def marl_render_pages(pages, data, options = {}):
+  dict(map(_marl_pages(pages, data, options, false), fn(result): [result[0], result[2]] end))
+end
+
+# Like marl_render_pages, but a page that fails does not stop the others.
+# Returns `{outputs: {name: output}, errors: {name: message}}`.
+def marl_try_render_pages(pages, data, options = {}):
+  let results = _marl_pages(pages, data, options, true)
+  | {outputs: dict(map(filter(results, fn(result): result[1] end), fn(result): [result[0], result[2]] end)),
+     errors: dict(map(filter(results, fn(result): !result[1] end), fn(result): [result[0], result[2]] end))}
+end
+
+# One `[name, rendered, output or error message]` per page, in `pages` order
+# of the index (newest first).
+def _marl_pages(pages, data, options, keep_going):
+  let parsed = dict(foreach (name, keys(pages)): [name, marl_parse_page(pages[name])] end)
+  | let index = reverse(sort_by(foreach (name, keys(parsed)):
+      dict(entries(parsed[name][:meta]) + [["name", name],
+        ["slug", if (ends_with(name, ".md")): name[0:(len(name) - 3)] else: name]])
+    end, fn(entry): _marl_output(entry[:date]) end))
+  | let scope = dict((if (is_dict(data)): entries(data) else: []) + [["pages", index]])
+  | foreach (entry, index):
+      let name = entry[:name]
+      | let page = {meta: entry, body: parsed[name][:body]}
+      | let page_options = dict(entries(options) + [[:source_name, name]])
+      | if (keep_going):
+          try: [name, true, _marl_render_page(page, scope, page_options)]
+          catch(e): [name, false, e[:message]]
+        else: [name, true, _marl_render_page(page, scope, page_options)]
+    end
+end
+
 def _marl_join_path(dir, name):
   if (ends_with(dir, "/")): dir + name else: dir + "/" + name
 end
@@ -514,13 +1040,37 @@ def marl_render_files(paths, data, options = {}):
   marl_render_all(dict(foreach (path, paths): [path, read_file(path)] end), data, options)
 end
 
+# Reads every file under a directory whose name ends with the `ext` option
+# (default ".md") into a dict of relative path to text (needs --allow-read).
+def marl_read_dir(dir, options = {}):
+  let ext = _marl_option(options, :ext, ".md")
+  | let names = filter(walk_files(dir), fn(name): ends_with(name, ext) end)
+  | dict(foreach (name, names): [name, read_file(_marl_join_path(dir, name))] end)
+end
+
 # Renders every file under a directory whose name ends with the `ext` option
 # (default ".md"). Keys are paths relative to the directory, so partials are
 # included by relative path, for example {% include "sub/head.md" %}.
 def marl_render_dir(dir, data, options = {}):
-  let ext = _marl_option(options, :ext, ".md")
-  | let names = filter(walk_files(dir), fn(name): ends_with(name, ext) end)
-  | marl_render_all(dict(foreach (name, names): [name, read_file(_marl_join_path(dir, name))] end), data, options)
+  marl_render_all(marl_read_dir(dir, options), data, options)
+end
+
+# Renders every page under `content_dir` with the templates under `themes_dir`
+# as partials. Theme `name` lives in `themes_dir/name/`, so a build for one
+# platform is `{theme: "name"}`. Returns a dict of page path to output.
+def marl_build(content_dir, themes_dir, data, options = {}):
+  marl_render_pages(marl_read_dir(content_dir, options), data, _marl_build_options(themes_dir, options))
+end
+
+# Like marl_build, but a page that fails does not stop the others. Returns
+# `{outputs: {path: output}, errors: {path: message}}`.
+def marl_try_build(content_dir, themes_dir, data, options = {}):
+  marl_try_render_pages(marl_read_dir(content_dir, options), data, _marl_build_options(themes_dir, options))
+end
+
+def _marl_build_options(themes_dir, options):
+  let partials = dict(entries(marl_read_dir(themes_dir, options)) + entries(_marl_option(options, :partials, {})))
+  | dict(entries(options) + [[:partials, partials]])
 end
 
 # Writes a dict of name to output below a directory with write_file (needs
