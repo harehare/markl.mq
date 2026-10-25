@@ -49,13 +49,13 @@ mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
 | [Filters and helpers](docs/filters.md) | Markdown formatting, `table`, `bullets`, `toc`, `date`, and more |
 | [Layouts, components, and themes](docs/layouts-and-themes.md) | `include ... with`, `component`, `extends`, `theme` |
 | [Articles and site builds](docs/articles.md) | Front matter, `marl_build`, Mermaid, HTML output |
-| [API](docs/api.md) | Functions, options, file helpers |
+| [API](docs/api.md) | Functions, options, file helpers, `marl_build_site` |
 
-See [`examples/`](examples) for an article rendered with three themes (`default`, `zenn`, `devto`).
+See [`examples/`](examples) for an article rendered with three themes (`default`, `zenn`, `devto`), and [`blog/`](blog) for a complete bilingual blog about mq built with markl.mq.
 
 ## Compatibility
 
-Requires [mq](https://github.com/harehare/mq) v0.9.0 or later and [mqmq](https://github.com/harehare/mqmq) (included as the `vendor/mqmq` submodule).
+Requires [mq](https://github.com/harehare/mq) v0.10.0 or later and [mqmq](https://github.com/harehare/mqmq) (included as the `vendor/mqmq` submodule).
 
 ## License
 

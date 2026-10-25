@@ -1009,6 +1009,28 @@ def _marl_unescape_html(text):
   replace(replace(replace(replace(replace(text, "&lt;", "<"), "&gt;", ">"), "&quot;", "\""), "&#39;", "'"), "&amp;", "&")
 end
 
+# The id of a heading, built like the `anchor` helper that `toc` links to.
+def _marl_heading_id(inner):
+  let plain = _marl_unescape_html(gsub(inner, "<[^>]+>", ""))
+  | join(map(filter(graphemes(downcase(trim(plain))), fn(ch): ch == " " || ch == "-" || ch == "_" || (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") || ch > "~" end),
+      fn(ch): if (ch == " "): "-" else: ch end), "")
+end
+
+def _marl_heading_ids_at(html, level):
+  let open = "<h" + to_string(level) + ">"
+  | let close = "</h" + to_string(level) + ">"
+  | let parts = split(html, open)
+  | fold(parts[1:len(parts)], parts[0], fn(acc, part):
+      acc + "<h" + to_string(level) + " id=\"" + _marl_heading_id(split(part, close)[0]) + "\">" + part
+    end)
+end
+
+# Gives every heading of converted HTML an id, since to_html leaves them out and
+# the links that `toc` writes would otherwise point nowhere.
+def _marl_heading_ids(html):
+  fold([1, 2, 3, 4, 5, 6], html, fn(acc, level): _marl_heading_ids_at(acc, level) end)
+end
+
 # Swaps the `language-mermaid` code blocks of converted HTML for inline SVG.
 # A block mermaid.mq cannot draw stays a code block. Done after the Markdown
 # to HTML conversion, which would escape the SVG's <style> element.
@@ -1028,7 +1050,8 @@ end
 # Wraps the page's HTML in the theme's `html` partial (a full document with the
 # theme's CSS). `content` is the HTML body; without such a partial it is returned bare.
 def _marl_html(markdown, scope, opts, lookup, mode, mtheme):
-  let html = to_html(markdown)
+  let converted = to_html(markdown)
+  | let html = if (_marl_option(opts, :heading_ids, true) == false): converted else: _marl_heading_ids(converted)
   | let body = if (mode == false || is_none(mode) || mode == :text || mode == "text"): html else: _marl_html_mermaid(html, mtheme)
   | let found = _marl_find(lookup, "html")
   | if (is_none(found)): body
@@ -1118,14 +1141,48 @@ def _marl_build_options(themes_dir, options):
   | dict(entries(options) + [[:partials, partials]])
 end
 
-# Writes a dict of name to output below a directory with write_file (needs
-# --allow-write). Directories must already exist. Returns the written paths.
+# The directory part of a path ("" when it has none).
+def _marl_dirname(path):
+  let parts = split(path, "/")
+  | join(parts[0:(len(parts) - 1)], "/")
+end
+
+# Writes a dict of name to output below a directory with write_file, creating
+# the directories it needs with mkdir (both need --allow-write). Returns the
+# written paths.
 def marl_write_all(outputs, dir):
-  foreach (name, keys(outputs)):
-    let path = _marl_join_path(dir, name)
-    | write_file(path, outputs[name])
-    | path
-  end
+  let paths = map(keys(outputs), fn(name): _marl_join_path(dir, name) end)
+  | foreach (parent, uniq(filter(map(paths, _marl_dirname), fn(d): d != "" end))): mkdir(parent) end
+  | foreach (name, keys(outputs)):
+      let path = _marl_join_path(dir, name)
+      | write_file(path, outputs[name])
+      | path
+    end
+end
+
+# The file name a page is written to: `.md` becomes `.html` when the pages are
+# converted to HTML.
+def _marl_site_name(name, options):
+  let ext = _marl_option(options, :ext, ".md")
+  | if (_marl_option(options, :html, false) != false && ends_with(name, ext)): name[0:(len(name) - len(ext))] + ".html" else: name
+end
+
+# The files of a built site as a dict of file name to content. If any page
+# failed, raises one error that lists every failing page.
+def _marl_site_files(result, options):
+  if (is_empty(result[:errors])):
+    dict(map(entries(result[:outputs]), fn(e): [_marl_site_name(e[0], options), e[1]] end))
+  else:
+    error(join(map(entries(result[:errors]), fn(e): e[0] + ": " + e[1] end), "\n"))
+end
+
+# Builds every page under `content_dir` with the themes under `themes_dir` (as
+# marl_build does) and writes the result below `out_dir`, creating directories as
+# needed (needs --allow-read and --allow-write). A page that fails stops the
+# build before anything is written, with an error naming every failing page.
+# Returns the written paths.
+def marl_build_site(content_dir, themes_dir, out_dir, data, options = {}):
+  marl_write_all(_marl_site_files(marl_try_build(content_dir, themes_dir, data, options), options), out_dir)
 end
 
 # Compiled once when the module is included, then shared by every template.

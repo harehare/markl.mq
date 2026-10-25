@@ -29,7 +29,14 @@ mq -I null -R -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | let r = marl_try_build("content", "themes", {}, {theme: "zenn"}) | r[:errors]'
 ```
 
-Writing the result to disk goes through `marl_write_all`, which needs existing directories (see [API](api.md#read-and-write-files)).
+To build a whole site in one call, use `marl_build_site`. It builds every page, stops with one error that names every failing page (nothing is written then), and otherwise writes the files below the output directory, creating directories as needed. With `html: true` the files are named `.html` instead of `.md`:
+
+```sh
+mq -I null -R -W -L . -L vendor/mqmq -L vendor/mermaid.mq \
+  'include "marl" | marl_build_site("examples/content", "examples/themes", "public", {}, {theme: "default", html: true})'
+```
+
+See [API](api.md#read-and-write-files) for the permissions it needs, and [`blog/`](../blog) for a complete example.
 
 ## Mermaid diagrams
 
@@ -43,6 +50,8 @@ mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
 ## HTML output
 
 With `html: true`, `marl_render_page` converts the finished Markdown to HTML (`to_html`) and wraps it in the theme's `html` partial, a full document with the theme's CSS. The partial receives `content` (the HTML body), `page` and the page data. `examples/themes/{default,zenn,devto}/html.md` follow the same `theme` lookup as layouts, including fallbacks such as `theme: ["zenn", "default"]`, and support light and dark mode. Without an `html` partial the bare HTML is returned.
+
+Every heading gets an `id` built like the `anchor` helper (`## Getting started` becomes `<h2 id="getting-started">`), so the links written by `toc` resolve. Pass `heading_ids: false` to leave headings as they are.
 
 `mermaid` blocks are drawn after the conversion, so the SVG is inlined as is. `mermaid_theme` (`"light"`, `"dark"` or `"auto"`, default `"light"`) sets the diagram theme; use `"auto"` to follow the page's `prefers-color-scheme`.
 

@@ -34,6 +34,7 @@ Options is a dict; every key is optional:
 | `mermaid` | none | `true` / `"svg"` inlines Mermaid diagrams as SVG, `"text"` as text blocks (pages only; see [Articles](articles.md#mermaid-diagrams)) |
 | `mermaid_theme` | `"light"` | `"light"`, `"dark"` or `"auto"` (pages only) |
 | `html` | `false` | Convert a page to HTML and wrap it in the theme's `html` partial (pages only; see [Articles](articles.md#html-output)) |
+| `heading_ids` | `true` | With `html: true`, give every heading an `id` that matches the `toc` links; `false` leaves headings without one (pages only) |
 
 ## Compile once
 
@@ -63,16 +64,24 @@ mq -I null -L . -L vendor/mqmq -L vendor/mermaid.mq \
 
 ## Read and write files
 
-These helpers use mq's `read_file`, `walk_files`, and `write_file`, which are disabled by default. Pass `--allow-read` (`-R`) to read and `--allow-write` (`-W`) to write; restrict them with `-R=PATH` if you like.
+These helpers use mq's `read_file`, `walk_files`, and `write_file`, which are disabled by default. Pass `--allow-read` (`-R`) to read and `--allow-write` (`-W`) to write; restrict them with `-R=PATH` and `-W=PATH` if you like (the directory given to `-W=PATH` must already exist). Creating directories uses mq's `mkdir`, which needs `--allow-write` too.
 
 | Function | Description |
 | --- | --- |
 | `marl_render_files(paths, data, options = {})` | Read each path and render with `marl_render_all`, keyed by path |
 | `marl_read_dir(dir, options = {})` | Read every file under `dir` ending with the `ext` option into a dict of relative path to text |
 | `marl_render_dir(dir, data, options = {})` | Render every file under `dir` ending with the `ext` option (default `".md"`). Keys are paths relative to `dir`, so partials are included as `{% include "sub/head.md" %}` |
-| `marl_write_all(outputs, dir)` | Write a dict of name to output below `dir` and return the written paths. Directories must already exist |
+| `marl_write_all(outputs, dir)` | Write a dict of name to output below `dir`, creating the directories it needs, and return the written paths |
+| `marl_build_site(content_dir, themes_dir, out_dir, data, options = {})` | Build every page like `marl_build` and write the result below `out_dir`. If any page fails, nothing is written and one error lists every failing page. With `html: true`, `.md` becomes `.html` in the file names. Returns the written paths |
 
 ```sh
 mq -I null -R -W -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_render_dir("content", {site: "Notes"}) | marl_write_all(., "public")'
+```
+
+`marl_build_site` is the same for a whole site with themes and layouts:
+
+```sh
+mq -I null -R -W -L . -L vendor/mqmq -L vendor/mermaid.mq \
+  'include "marl" | marl_build_site("content", "themes", "public", {site: "Notes"}, {theme: "default", html: true})'
 ```

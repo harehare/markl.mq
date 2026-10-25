@@ -472,10 +472,10 @@ end
 def test_html_option_wraps_page_in_theme_shell():
   let partials = {"alt/html.md": "<html><title>{{ page[:title] }}</title>{{ content }}</html>"}
   | let page = "---\ntitle: T\n---\n# Hi\n\n```mermaid\ngraph LR\n  A --> B\n```\n"
-  | assert_eq(marl_render_page("# Hi", {}, {html: true}), "<h1>Hi</h1>")
-  | assert_eq(marl_render_page("# Hi", {}, {html: true, partials: partials, theme: "alt"}), "<html><title></title><h1>Hi</h1></html>")
+  | assert_eq(marl_render_page("# Hi", {}, {html: true}), "<h1 id=\"hi\">Hi</h1>")
+  | assert_eq(marl_render_page("# Hi", {}, {html: true, partials: partials, theme: "alt"}), "<html><title></title><h1 id=\"hi\">Hi</h1></html>")
   | let out = marl_render_page(page, {}, {html: true, mermaid: true, partials: partials, theme: "alt"})
-  | assert_eq(starts_with(out, "<html><title>T</title><h1>Hi</h1>\n<svg"), true)
+  | assert_eq(starts_with(out, "<html><title>T</title><h1 id=\"hi\">Hi</h1>\n<svg"), true)
   | assert_eq(contains(out, "<style>"), true)
   | assert_eq(contains(out, "&lt;style>"), false)
   | assert_eq(contains(marl_render_page(page, {}, {html: true, mermaid: true, mermaid_theme: "dark"}), "mm-dark"), true)
@@ -487,4 +487,32 @@ def test_html_env_flag_reaches_templates():
   | assert_eq(marl_render_page("{% include \"c\" %}", {}, {partials: partials}), "M")
   | assert_eq(marl_render_page("{% include \"c\" %}", {}, {partials: partials, html: true}), "<p>H</p>")
   | assert_eq(marl_render_page("{% include \"c\" %}", {}, {partials: partials, html: true, env: {html: false}}), "<p>M</p>")
+end
+
+def test_html_headings_get_ids_that_toc_links_to():
+  let page = "# Top\n\n## Getting `started` & more\n\n### 日本語 見出し\n\n```html\n<h2>not a heading</h2>\n```\n"
+  | let html = marl_render_page(page, {}, {html: true})
+  | assert_eq(contains(html, "<h2 id=\"getting-started--more\">"), true)
+  | assert_eq(contains(html, "<h3 id=\"日本語-見出し\">"), true)
+  | assert_eq(contains(html, "&lt;h2&gt;not a heading&lt;/h2&gt;"), true)
+  | assert_eq(contains(html, "<h2 id=\"not"), false)
+  | assert_eq(marl_render("{{ md | toc(2, 3) }}", {md: "## Getting `started` & more\n### 日本語 見出し"}),
+      "- [Getting started & more](#getting-started--more)\n  - [日本語 見出し](#日本語-見出し)")
+  | assert_eq(marl_render_page("## A", {}, {html: true, heading_ids: false}), "<h2>A</h2>")
+end
+
+def test_site_files_rename_pages_to_html():
+  let result = {outputs: {"a.md": "A", "sub/b.md": "B", "c.txt": "C"}, errors: {}}
+  | assert_eq(_marl_site_files(result, {}), {"a.md": "A", "sub/b.md": "B", "c.txt": "C"})
+  | assert_eq(_marl_site_files(result, {html: true}), {"a.html": "A", "sub/b.html": "B", "c.txt": "C"})
+  | assert_eq(_marl_site_files({outputs: {"a.markdown": "A", "b.md": "B"}, errors: {}}, {html: true, ext: ".markdown"}), {"a.html": "A", "b.md": "B"})
+end
+
+def test_site_files_report_every_failing_page():
+  let result = {outputs: {"ok.md": "fine"}, errors: {"x.md": "x.md:1:1: boom", "y.md": "y.md:2:3: bang"}}
+  | assert_eq(try: _marl_site_files(result, {}) catch(e): e[:message], "x.md: x.md:1:1: boom\ny.md: y.md:2:3: bang")
+end
+
+def test_dirname_of_a_path():
+  assert_eq([_marl_dirname("a.html"), _marl_dirname("out/a.html"), _marl_dirname("out/ja/a.html")], ["", "out", "out/ja"])
 end
