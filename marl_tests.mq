@@ -516,3 +516,14 @@ end
 def test_dirname_of_a_path():
   assert_eq([_marl_dirname("a.html"), _marl_dirname("out/a.html"), _marl_dirname("out/ja/a.html")], ["", "out", "out/ja"])
 end
+
+def test_skip_unpublished_leaves_out_drafts():
+  let pages = {"a.md": "---\ntitle: A\n---\nA", "b.md": "---\ntitle: B\ndraft: true\n---\nB",
+               "c.md": "---\ntitle: C\npublished: false\n---\nC", "d.md": "---\ntitle: D\npublished: true\ndraft: false\n---\nD",
+               "e.md": "{{ len(pages) }}"}
+  | assert_eq(sort(keys(marl_render_pages(pages, {}, {layout: false}))), ["a.md", "b.md", "c.md", "d.md", "e.md"])
+  | let out = marl_render_pages(pages, {}, {layout: false, skip_unpublished: true})
+  | assert_eq(sort(keys(out)), ["a.md", "d.md", "e.md"])
+  | assert_eq(out["e.md"], "3")
+  | assert_eq(sort(keys(marl_try_render_pages(pages, {}, {layout: false, skip_unpublished: true})[:outputs])), ["a.md", "d.md", "e.md"])
+end

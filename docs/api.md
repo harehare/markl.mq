@@ -35,6 +35,7 @@ Options is a dict; every key is optional:
 | `mermaid_theme` | `"light"` | `"light"`, `"dark"` or `"auto"` (pages only) |
 | `html` | `false` | Convert a page to HTML and wrap it in the theme's `html` partial (pages only; see [Articles](articles.md#html-output)) |
 | `heading_ids` | `true` | With `html: true`, give every heading an `id` that matches the `toc` links; `false` leaves headings without one (pages only) |
+| `skip_unpublished` | `false` | Leave out pages whose front matter has `draft: true` or `published: false`: they are not rendered, not written by `marl_build_site`, and not listed in `pages` (`marl_render_pages`, `marl_build`, `marl_build_site` only) |
 
 ## Compile once
 

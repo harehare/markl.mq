@@ -22,6 +22,8 @@ mq -I null -R -L . -L vendor/mqmq -L vendor/mermaid.mq \
   'include "marl" | marl_build("examples/content", "examples/themes", {}, {theme: ["zenn", "default"]})'
 ```
 
+Mark a page as unpublished with `draft: true` or `published: false` in its front matter and pass `skip_unpublished: true`: those pages are not rendered, not written, and not listed in `pages`. Leave the option off to build them, for example for a local preview.
+
 One failing page normally stops the whole build with an error naming the file. To build everything that can be built and see all the errors at once, use the `try` variants:
 
 ```sh

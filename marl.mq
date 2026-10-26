@@ -1078,10 +1078,18 @@ def marl_try_render_pages(pages, data, options = {}):
      errors: dict(map(filter(results, fn(result): !result[1] end), fn(result): [result[0], result[2]] end))}
 end
 
+# A page is unpublished when its front matter has `draft: true` or `published: false`.
+def _marl_unpublished(meta):
+  meta[:draft] == true || meta[:published] == false
+end
+
 # One `[name, rendered, output or error message]` per page, in `pages` order
 # of the index (newest first).
 def _marl_pages(pages, data, options, keep_going):
-  let parsed = dict(foreach (name, keys(pages)): [name, marl_parse_page(pages[name])] end)
+  let parsed_all = dict(foreach (name, keys(pages)): [name, marl_parse_page(pages[name])] end)
+  | let parsed = if (_marl_option(options, :skip_unpublished, false) != false):
+      dict(filter(entries(parsed_all), fn(e): !_marl_unpublished(e[1][:meta]) end))
+    else: parsed_all
   | let index = reverse(sort_by(foreach (name, keys(parsed)):
       dict(entries(parsed[name][:meta]) + [["name", name],
         ["slug", if (ends_with(name, ".md")): name[0:(len(name) - 3)] else: name]])
