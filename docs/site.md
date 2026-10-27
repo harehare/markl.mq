@@ -2,7 +2,10 @@
 
 This page walks through a small static site, such as a blog or a documentation site, built from a directory of Markdown files. Every command was run as shown. Paths are relative to the `markl.mq` directory; if your site lives elsewhere, point the `-L` options at it.
 
-You need mq v0.10.0 or later (`marl_build_site` creates the output directories with `mkdir`) and the submodules from [Getting started](getting-started.md).
+You need the latest development version of mq (`marl_build_site` creates the output directories with `mkdir`) and the submodules from [Getting started](getting-started.md).
+
+> [!NOTE]
+> The development version of mq is required, and it is still under active development. Behavior may change until the next mq release.
 
 ## 1. Lay out the project
 

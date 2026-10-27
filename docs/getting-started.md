@@ -86,4 +86,7 @@ mq-test -L vendor/mqmq -L vendor/mermaid.mq marl_tests.mq
 
 ## Compatibility
 
-Requires [mq](https://github.com/harehare/mq) v0.10.0 or later and [mqmq](https://github.com/harehare/mqmq) (included as the `vendor/mqmq` submodule). Template expressions use mqmq's supported language features.
+Requires the latest development version of [mq](https://github.com/harehare/mq) and [mqmq](https://github.com/harehare/mqmq) (included as the `vendor/mqmq` submodule). Template expressions use mqmq's supported language features.
+
+> [!NOTE]
+> The development version of mq is required, and it is still under active development. Behavior may change until the next mq release.
